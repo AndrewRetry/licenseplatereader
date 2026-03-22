@@ -38,7 +38,6 @@ const PREFIX_PADDING = { 1: '  ', 2: ' ', 3: '' };
  */
 export function computeChecksum(prefix, digits) {
   const padded = (PREFIX_PADDING[prefix.length] + prefix).slice(-3);
-  // Weights cover 3 prefix positions + first 3 of the 4-digit zero-padded number = 6 total
   const nums = [
     ...padded.split('').map(c => (c === ' ' ? 0 : c.charCodeAt(0) - 64)),
     ...digits.padStart(4, '0').slice(0, 3).split('').map(Number),
@@ -49,18 +48,37 @@ export function computeChecksum(prefix, digits) {
 
 /**
  * Normalise raw OCR text into a candidate plate string.
- * Handles common OCR misreads: 0↔O, 1↔I, 8↔B, 5↔S etc.
+ *
+ * Key fix: O→0 and I→1 substitutions are scoped exclusively to the digit
+ * block, determined by splitting the cleaned string into
+ * (letter-prefix)(digits)(optional-trailing-letter).
+ *
+ * Previous approach used lookahead/lookbehind on the raw string which caused:
+ *   1. Prefix letters adjacent to digits being replaced (SBO1234A → SB01234A,
+ *      giving 5-digit block that fails every pattern)
+ *   2. The checksum letter being replaced (SBA1234O → SBA12340, trailing
+ *      digit breaks the [A-Z] requirement)
  */
 export function normalise(raw) {
-  return raw
+  const clean = raw
     .toUpperCase()
-    .replace(/\s+/g, '')           // strip all whitespace
-    .replace(/[^A-Z0-9]/g, '')     // strip non-alphanumeric
-    .replace(/O(?=\d)/g, '0')      // O → 0 when adjacent to digit
-    .replace(/(?<=\d)O/g, '0')
-    .replace(/I(?=\d)/g, '1')
-    .replace(/(?<=\d)I/g, '1')
-    .replace(/(?<=[A-Z])8(?=[A-Z])/g, 'B');  // 8 → B between letters
+    .replace(/\s+/g, '')
+    .replace(/[^A-Z0-9]/g, '');
+
+  const m = clean.match(/^([A-Z]*)(\d+)([A-Z]?)$/);
+  if (!m) return clean;
+
+  const [, prefix, digits, checksum] = m;
+
+  // O/I → digit only inside the digit block
+  const fixedDigits = digits
+    .replace(/O/g, '0')
+    .replace(/I/g, '1');
+
+  // 8 → B only inside the prefix (between letters)
+  const fixedPrefix = prefix.replace(/(?<=[A-Z])8(?=[A-Z]|$)/g, 'B');
+
+  return fixedPrefix + fixedDigits + checksum;
 }
 
 /**
@@ -68,8 +86,7 @@ export function normalise(raw) {
  * Returns an enriched result object or null if invalid.
  *
  * @param {string} raw  raw OCR text
- * @returns {{ plate: string, prefix: string, digits: string, checksum: string|null,
- *             checksumValid: boolean|null, format: string, confidence: 'high'|'medium'|'low' } | null}
+ * @returns {{ plate, prefix, digits, checksum, checksumValid, format, confidence } | null}
  */
 export function validatePlate(raw) {
   if (!raw || raw.length < 3) return null;
