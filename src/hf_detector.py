@@ -12,8 +12,7 @@ Strategy:
   3. Horizontal strip fallback     ← guaranteed last resort
 """
 
-import io
-from functools import lru_cache
+import warnings
 from typing import Optional
 
 import cv2
@@ -28,21 +27,38 @@ logger = get_logger(__name__)
 _YOLOS_MODEL_ID = "nickmuchi/yolos-small-rego-plates-detection"
 _CONFIDENCE_THRESHOLD = 0.45   # minimum YOLOS score to accept a detection
 
+# Explicit module-level singleton — avoids lru_cache double-load when the
+# module is imported under two different paths in the same process.
+_processor = None
+_model = None
 
-@lru_cache(maxsize=1)
+
 def _get_yolos():
     """
-    Lazy singleton — loads model once, cached for the process lifetime.
-    Import is deferred so the module loads without torch at import time.
+    Lazy singleton. Returns (processor, model), loading once per process.
+    Deferred import keeps the module loadable without torch.
     """
+    global _processor, _model
+
+    if _processor is not None and _model is not None:
+        return _processor, _model
+
+    # Suppress transformers deprecation noise that is expected and harmless
+    warnings.filterwarnings("ignore", category=FutureWarning, module="transformers")
+    warnings.filterwarnings("ignore", message=".*max_size.*deprecated.*")
+
     from transformers import YolosForObjectDetection, YolosImageProcessor  # noqa: PLC0415
 
     logger.info("Loading YOLOS plate detector from HuggingFace Hub", model=_YOLOS_MODEL_ID)
-    processor = YolosImageProcessor.from_pretrained(_YOLOS_MODEL_ID)
-    model = YolosForObjectDetection.from_pretrained(_YOLOS_MODEL_ID)
-    model.eval()
+    _processor = YolosImageProcessor.from_pretrained(
+        _YOLOS_MODEL_ID,
+        size={"longest_edge": 512},   # replaces deprecated max_size param
+    )
+    _model = YolosForObjectDetection.from_pretrained(_YOLOS_MODEL_ID)
+    _model.eval()
     logger.info("YOLOS detector ready")
-    return processor, model
+
+    return _processor, _model
 
 
 def _yolos_candidates(img_bgr: np.ndarray) -> list[PlateRegion]:

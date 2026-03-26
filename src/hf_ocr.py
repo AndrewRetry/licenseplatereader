@@ -13,7 +13,7 @@ for ranking candidates.
 """
 
 import math
-from functools import lru_cache
+import warnings
 from typing import Optional
 
 import cv2
@@ -27,20 +27,40 @@ logger = get_logger(__name__)
 _TROCR_MODEL_ID = "microsoft/trocr-base-printed"
 TARGET_WIDTH = 384    # TrOCR's ViT encoder was trained at 384×384
 
+# Explicit module-level singleton — avoids lru_cache double-load when the
+# module is imported under two different paths in the same process.
+_processor = None
+_model = None
 
-@lru_cache(maxsize=1)
+
 def _get_trocr():
     """
-    Lazy singleton. Deferred import keeps the module loadable without torch.
+    Lazy singleton. Returns (processor, model), loading once per process.
+    Deferred import keeps the module loadable without torch.
     """
+    global _processor, _model
+
+    if _processor is not None and _model is not None:
+        return _processor, _model
+
+    # Suppress transformers noise that is expected and harmless for inference
+    warnings.filterwarnings("ignore", category=FutureWarning, module="transformers")
+    warnings.filterwarnings("ignore", message=".*clean_up_tokenization_spaces.*")
+    warnings.filterwarnings("ignore", message=".*not initialized from the model checkpoint.*")
+    warnings.filterwarnings("ignore", message=".*You should probably TRAIN.*")
+
     from transformers import TrOCRProcessor, VisionEncoderDecoderModel  # noqa: PLC0415
 
     logger.info("Loading TrOCR from HuggingFace Hub", model=_TROCR_MODEL_ID)
-    processor = TrOCRProcessor.from_pretrained(_TROCR_MODEL_ID)
-    model = VisionEncoderDecoderModel.from_pretrained(_TROCR_MODEL_ID)
-    model.eval()
+    _processor = TrOCRProcessor.from_pretrained(
+        _TROCR_MODEL_ID,
+        clean_up_tokenization_spaces=True,   # silence FutureWarning explicitly
+    )
+    _model = VisionEncoderDecoderModel.from_pretrained(_TROCR_MODEL_ID)
+    _model.eval()
     logger.info("TrOCR ready")
-    return processor, model
+
+    return _processor, _model
 
 
 def _preprocess_crop(crop_bgr: np.ndarray) -> list[tuple[np.ndarray, str]]:

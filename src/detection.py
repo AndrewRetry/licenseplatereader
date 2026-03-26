@@ -51,6 +51,15 @@ def _compute_score(ocr_conf: float, validation: PlateResult) -> float:
     return score
 
 
+def _serialise(c: Candidate) -> dict:
+    """Convert a Candidate to a camelCase dict matching the REST contract."""
+    d = asdict(c)
+    d["ocrConfidence"] = d.pop("ocr_confidence")
+    d["checksumValid"] = d.pop("checksum_valid")
+    d["rawOcrText"]    = d.pop("raw_ocr_text")
+    return d
+
+
 def detect(image_bytes: bytes) -> dict[str, Any]:
     """
     Full detection pipeline on raw image bytes.
@@ -108,12 +117,6 @@ def detect(image_bytes: bytes) -> dict[str, Any]:
     # Step 3: Rank
     ranked = sorted(seen.values(), key=lambda c: c.score, reverse=True)
     elapsed_ms = round((time.time() - start) * 1000)
-
-    def _serialise(c: Candidate) -> dict:
-        d = asdict(c)
-        d["ocrConfidence"] = d.pop("ocr_confidence")
-        d["checksumValid"] = d.pop("checksum_valid")
-        return d
 
     best = _serialise(ranked[0]) if ranked else None
 

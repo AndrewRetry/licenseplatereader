@@ -18,7 +18,7 @@ import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
 from src.detection import detect
@@ -36,7 +36,7 @@ MAX_FILE_BYTES = int(os.getenv("MAX_FILE_SIZE_MB", "10")) * 1024 * 1024
 ALLOWED_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp", "image/bmp"}
 
 
-# ── Startup: pre-load HuggingFace models so the first request is fast ────────
+# ── Startup: pre-load HuggingFace models so the first request is fast ─────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -47,10 +47,14 @@ async def lifespan(app: FastAPI):
         logger.info("HuggingFace models ready")
     except Exception as exc:
         logger.warning("Model warmup failed — will retry on first request", error=str(exc))
-    yield
+
+    try:
+        yield
+    finally:
+        logger.info("Shutdown complete")
 
 
-# ── App ───────────────────────────────────────────────────────────────────────
+# ── App ────────────────────────────────────────────────────────────────────────
 
 app = FastAPI(
     title="License Plate Reader",
@@ -66,7 +70,22 @@ app.add_middleware(
 )
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Convenience redirects ──────────────────────────────────────────────────────
+
+@app.get("/", include_in_schema=False)
+def root():
+    return RedirectResponse("/api/plate/health")
+
+@app.get("/health", include_in_schema=False)
+def health_alias():
+    return RedirectResponse("/api/plate/health")
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    raise HTTPException(status_code=204)
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
 
 async def _read_image(file: UploadFile) -> bytes:
     if file.content_type and file.content_type not in ALLOWED_CONTENT_TYPES:
@@ -77,14 +96,19 @@ async def _read_image(file: UploadFile) -> bytes:
     return data
 
 
-# ── Routes ────────────────────────────────────────────────────────────────────
+# ── Routes ─────────────────────────────────────────────────────────────────────
 
 @app.get("/api/plate/health")
 def health():
-    return {"status": "ok", "version": "4.0.0", "engine": "yolos+trocr", "models": {
-        "detection": "nickmuchi/yolos-small-rego-plates-detection",
-        "ocr": "microsoft/trocr-base-printed",
-    }}
+    return {
+        "status": "ok",
+        "version": "4.0.0",
+        "engine": "yolos+trocr",
+        "models": {
+            "detection": "nickmuchi/yolos-small-rego-plates-detection",
+            "ocr": "microsoft/trocr-base-printed",
+        },
+    }
 
 
 @app.post("/api/plate/detect")
@@ -172,8 +196,8 @@ async def debug_detect(image: Annotated[UploadFile, File()]):
     })
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+# ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "3001"))
-    uvicorn.run("server:app", host="0.0.0.0", port=port, reload=False)
+    uvicorn.run("server:app", host="127.0.0.1", port=port, reload=False)
