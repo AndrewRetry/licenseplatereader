@@ -1,2 +1,11 @@
-.env
+/dataset
+/sg-anpr
+/anpr-files
+/labelImg-pyside6
+.DS_Store
+License-Plate-Recognition-YOLOv7-and-CNN-main.zip
+generate.py
+/License-Plate-Recognition-YOLOv7-and-CNN-main/data
+/trained-model-weights
+/src/weights
 .venv
