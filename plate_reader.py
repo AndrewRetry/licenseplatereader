@@ -1,13 +1,23 @@
 """
-plate_reader.py — Core license plate detection and OCR engine.
+plate_reader.py — License plate detection and OCR engine, tuned for Singapore plates.
+
+Singapore plate format:  SBA 1234 A
+  - Prefix:    1–3 letters  (I and O never used; no vowels in 2nd char of 3-letter prefix)
+  - Numbers:   1–4 digits
+  - Checksum:  1 letter     (F, I, N, O, Q, V, W never used as check digits)
+
+Two LTA-approved colour schemes:
+  - White-on-black  (white text, black background) — most common
+  - Black-on-white  (front) / black-on-yellow (rear) — Euro scheme
 
 Pipeline:
-  Image → YOLOv8n (detect plate bbox) → Crop → Preprocess → EasyOCR → Clean text
+  Image → YOLOv8n (detect plate bbox) → Crop → Normalise colour →
+  Preprocess → EasyOCR → SG-aware clean + validate → "SBA1234A"
 
 Usage:
   reader = PlateReader("plate_model.pt")
   results = reader.read(image_bgr)
-  # [{"text": "SGX1234A", "confidence": 0.94, "bbox": [x1,y1,x2,y2]}]
+  # [{"text": "SBA1234A", "confidence": 0.94, "bbox": [x1,y1,x2,y2]}]
 """
 
 import re
@@ -21,9 +31,34 @@ from ultralytics import YOLO
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Singapore plate constants
+# ---------------------------------------------------------------------------
+
+# Matches: 1–3 prefix letters, 1–4 digits, 1 checksum letter
+# I and O are excluded from all positions; checksum never uses F,I,N,O,Q,V,W
+_SG_PLATE_RE = re.compile(r"^[A-HJ-NPR-Z]{1,3}[0-9]{1,4}[A-EG-HJ-MPRSTU-Z]$")
+
+# Minimum / maximum character count for a plausible SG plate
+_SG_MIN_LEN = 4   # e.g. S12A (edge case)
+_SG_MAX_LEN = 8   # e.g. SBA1234A (standard)
+
+# OCR confuses these in numeric regions: letter → digit
+_ALPHA_TO_DIGIT: dict[str, str] = {
+    "O": "0",
+    "I": "1",
+    "S": "5",
+    "B": "8",
+    "G": "6",
+    "Z": "2",
+}
+
+# OCR confuses these in letter regions: digit → letter
+_DIGIT_TO_ALPHA: dict[str, str] = {v: k for k, v in _ALPHA_TO_DIGIT.items()}
+
 
 class PlateReader:
-    """Lightweight license plate detector + OCR reader."""
+    """Lightweight license plate detector + OCR reader, tuned for Singapore."""
 
     def __init__(
         self,
@@ -34,12 +69,11 @@ class PlateReader:
     ):
         """
         Args:
-            model_path:     Path to YOLOv8 .pt weights trained on license plates.
-            detect_conf:    Minimum confidence for plate detection (0.0–1.0).
-            ocr_languages:  Language codes for EasyOCR. Default ["en"].
-            gpu:            Use GPU for inference. False = CPU-only (fine for gantry).
+            model_path:    Path to YOLOv8 .pt weights trained on license plates.
+            detect_conf:   Minimum YOLO detection confidence (0.0–1.0).
+            ocr_languages: EasyOCR language codes. Defaults to ["en"] — correct for SG plates.
+            gpu:           Use GPU for inference. False = CPU-only (adequate for gantry use).
         """
-        # --- Load YOLO detector ---
         if not Path(model_path).exists():
             raise FileNotFoundError(
                 f"Model not found at '{model_path}'. "
@@ -49,7 +83,6 @@ class PlateReader:
         self.detect_conf = detect_conf
         logger.info("YOLO model loaded from %s", model_path)
 
-        # --- Load EasyOCR reader ---
         langs = ocr_languages or ["en"]
         self.ocr = easyocr.Reader(langs, gpu=gpu)
         logger.info("EasyOCR loaded for languages: %s (GPU=%s)", langs, gpu)
@@ -66,29 +99,21 @@ class PlateReader:
             image: BGR image (OpenCV format), e.g. from cv2.imread().
 
         Returns:
-            List of dicts, each with keys:
-              - text:       cleaned plate string, e.g. "SGX1234A"
+            List of dicts with keys:
+              - text:       cleaned Singapore plate string, e.g. "SBA1234A"
               - confidence: YOLO detection confidence (0–1)
               - bbox:       [x1, y1, x2, y2] pixel coordinates
         """
         plates = []
-
-        # Step 1: Detect plate bounding boxes
         detections = self._detect_plates(image)
 
         for bbox, conf in detections:
             x1, y1, x2, y2 = bbox
 
-            # Step 2: Crop with padding
             crop = self._crop_plate(image, x1, y1, x2, y2)
-
-            # Step 3: Preprocess for OCR
-            processed = self._preprocess(crop)
-
-            # Step 4: OCR
+            normalised = self._normalise_colour_scheme(crop)
+            processed = self._preprocess(normalised)
             raw_text = self._ocr_read(processed)
-
-            # Step 5: Clean
             clean_text = self._clean_plate_text(raw_text)
 
             if clean_text:
@@ -116,21 +141,18 @@ class PlateReader:
         return self.read(image)
 
     # ------------------------------------------------------------------
-    # Internal steps
+    # Internal pipeline steps
     # ------------------------------------------------------------------
 
     def _detect_plates(self, image: np.ndarray) -> list[tuple]:
-        """Run YOLO and return list of (bbox, confidence)."""
+        """Run YOLO and return [(bbox, confidence)] sorted by confidence desc."""
         results = self.detector(image, conf=self.detect_conf, verbose=False)
-
         detections = []
         for result in results:
             for box in result.boxes:
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
                 conf = box.conf[0].item()
                 detections.append(([x1, y1, x2, y2], conf))
-
-        # Sort by confidence descending
         detections.sort(key=lambda d: d[1], reverse=True)
         return detections
 
@@ -141,41 +163,56 @@ class PlateReader:
         h, w = image.shape[:2]
         pad_x = int((x2 - x1) * 0.05)
         pad_y = int((y2 - y1) * 0.10)
-
-        # Clamp to image bounds
         x1 = max(0, int(x1) - pad_x)
         y1 = max(0, int(y1) - pad_y)
         x2 = min(w, int(x2) + pad_x)
         y2 = min(h, int(y2) + pad_y)
-
         return image[y1:y2, x1:x2]
+
+    def _normalise_colour_scheme(self, crop: np.ndarray) -> np.ndarray:
+        """
+        Detect and normalise Singapore plate colour scheme.
+
+        LTA permits two schemes:
+          - White-on-black (white text, black bg) — must invert for OCR
+          - Black-on-white / black-on-yellow (black text, light bg) — use as-is
+
+        We detect scheme by measuring the mean brightness of the crop.
+        A dark mean indicates white-on-black; we invert so text is always dark.
+        """
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        mean_brightness = float(np.mean(gray))
+
+        if mean_brightness < 100:
+            # White-on-black plate: invert so text becomes dark on light background
+            logger.debug("White-on-black plate detected (mean=%.1f) — inverting", mean_brightness)
+            return cv2.bitwise_not(crop)
+
+        # Black-on-white or black-on-yellow: use as-is
+        return crop
 
     def _preprocess(self, crop: np.ndarray) -> np.ndarray:
         """
-        Preprocess the plate crop to improve OCR accuracy.
+        Preprocess the (already colour-normalised) plate crop for OCR.
 
         Steps:
-          1. Convert to grayscale
-          2. Resize to a standard height (better for OCR)
-          3. Apply CLAHE for contrast enhancement
-          4. Light bilateral filter to reduce noise but keep edges
+          1. Grayscale
+          2. Resize to standard 80 px height (consistent character size for EasyOCR)
+          3. CLAHE for adaptive contrast (handles uneven gantry lighting)
+          4. Bilateral filter to reduce noise while preserving character edges
         """
         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
 
-        # Resize so plate height is ~80px (consistent for OCR)
         target_h = 80
-        scale = target_h / gray.shape[0] if gray.shape[0] > 0 else 1
-        if scale != 1:
-            new_w = int(gray.shape[1] * scale)
+        if gray.shape[0] > 0 and gray.shape[0] != target_h:
+            scale = target_h / gray.shape[0]
+            new_w = max(1, int(gray.shape[1] * scale))
             gray = cv2.resize(gray, (new_w, target_h), interpolation=cv2.INTER_CUBIC)
 
-        # CLAHE: adaptive contrast (handles uneven lighting at gantry)
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         gray = clahe.apply(gray)
 
-        # Gentle noise reduction
         gray = cv2.bilateralFilter(gray, 9, 75, 75)
-
         return gray
 
     def _ocr_read(self, processed: np.ndarray) -> str:
@@ -183,45 +220,83 @@ class PlateReader:
         results = self.ocr.readtext(
             processed,
             allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
-            paragraph=True,        # merge nearby text into one line
-            detail=0,              # return plain strings only
+            paragraph=True,   # merge nearby text into one line
+            detail=0,         # plain strings only
         )
         return " ".join(results) if results else ""
 
     def _clean_plate_text(self, raw: str) -> str:
         """
-        Post-process OCR output to fix common misreads.
+        Post-process OCR output for Singapore plates.
 
-        Customize the char_map for your country's plate format.
+        Steps:
+          1. Uppercase, strip spaces, keep only alphanumeric
+          2. Apply position-aware OCR error corrections:
+             - Prefix (letter) region:  digits that look like letters are fixed
+             - Number region:           letters that look like digits are fixed
+             - Checksum (last char):    ensure it is a letter
+          3. Validate against Singapore plate format
         """
         text = raw.upper().strip()
-
-        # Remove anything that's not alphanumeric
         text = re.sub(r"[^A-Z0-9]", "", text)
 
-        # Common OCR substitution errors
-        char_map = {
-            "O": "0",  # In numeric positions, O→0
-            "I": "1",  # I→1
-            "S": "5",  # S→5
-            "B": "8",  # B→8
-            "G": "6",  # G→6
-            "Z": "2",  # Z→2
-        }
-        # NOTE: These replacements are aggressive and depend on plate format.
-        # For Singapore plates (SXX #### X), you'd only apply these in
-        # the numeric middle section. For now, we return raw alphanumeric.
-        # Uncomment below if you want aggressive correction:
-        #
-        # corrected = []
-        # for i, ch in enumerate(text):
-        #     if i >= 3 and i <= 6 and ch in char_map:  # numeric section
-        #         corrected.append(char_map[ch])
-        #     else:
-        #         corrected.append(ch)
-        # text = "".join(corrected)
+        if not (_SG_MIN_LEN <= len(text) <= _SG_MAX_LEN):
+            return ""
+
+        text = self._apply_sg_corrections(text)
+
+        if not self._is_valid_sg_plate(text):
+            return ""
 
         return text
+
+    def _apply_sg_corrections(self, text: str) -> str:
+        """
+        Apply position-aware corrections based on Singapore plate structure:
+          [PREFIX letters] [NUMBER digits] [CHECKSUM letter]
+
+        We locate where the digit block starts and apply corrections
+        to each region accordingly.
+        """
+        chars = list(text)
+        n = len(chars)
+
+        # --- Ensure last character is a letter (checksum) ---
+        if chars[-1].isdigit():
+            chars[-1] = _DIGIT_TO_ALPHA.get(chars[-1], chars[-1])
+
+        # --- Find where the numeric block starts ---
+        # Scan from left; the first character that looks like a digit
+        # (or is a letter commonly confused with a digit) marks the boundary.
+        digit_start = n - 1  # fallback: no digit block found
+        for i in range(n - 1):  # exclude the last checksum char
+            ch = chars[i]
+            if ch.isdigit() or ch in _ALPHA_TO_DIGIT:
+                digit_start = i
+                break
+
+        # --- Correct prefix region (should be letters) ---
+        for i in range(digit_start):
+            if chars[i].isdigit():
+                chars[i] = _DIGIT_TO_ALPHA.get(chars[i], chars[i])
+
+        # --- Correct numeric region (should be digits) ---
+        for i in range(digit_start, n - 1):
+            if chars[i].isalpha():
+                chars[i] = _ALPHA_TO_DIGIT.get(chars[i], chars[i])
+
+        return "".join(chars)
+
+    def _is_valid_sg_plate(self, text: str) -> bool:
+        """
+        Return True if text matches the Singapore plate format.
+
+        Format: [1–3 prefix letters][1–4 digits][1 checksum letter]
+        Exclusions:
+          - I and O never appear (too similar to 1 and 0)
+          - Checksum never uses F, I, N, O, Q, V, W
+        """
+        return bool(_SG_PLATE_RE.match(text))
 
 
 # ------------------------------------------------------------------

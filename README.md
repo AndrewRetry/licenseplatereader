@@ -1,145 +1,112 @@
-# Gantry License Plate Reader — Beginner Tutorial
+# Gantry License Plate Reader — Singapore
 
-A lightweight license plate detection + OCR system exposed as a REST API.
-Returns the plate string from an image.
+A lightweight license plate detection + OCR system tuned for **Singapore LTA plates**,
+exposed as a REST API. Returns the plate string from a single image.
 
 ## Architecture
 
 ```
-Camera/Image ──► YOLOv8n (detect plate) ──► Crop ──► EasyOCR (read text) ──► "SGX1234A"
-                    ~6 MB model              OpenCV       PyTorch-based
+Camera/Image ──► YOLOv8n ──────► Crop ──► Colour ──► EasyOCR ──► SG Validate ──► "SBA1234A"
+                  Detect plate    OpenCV    Normalise    PyTorch      Regex + fix
 ```
 
-**Why this stack (not the repo's YOLOv7 + PaddleOCR)?**
+## Singapore Plate Format
 
-| Choice        | Why                                                        |
-|---------------|------------------------------------------------------------|
-| YOLOv8n       | Same accuracy, 1-line pip install, no cloning repos needed |
-| EasyOCR       | PyTorch-based (same as YOLO), simpler install than Paddle  |
-| FastAPI       | Async, auto-docs at `/docs`, production-ready              |
+Singapore plates follow the LTA-mandated `SBA 1234 A` format:
 
-Everything is **free and open-source**. No API keys needed.
+| Part        | Detail                                                         |
+|-------------|----------------------------------------------------------------|
+| Prefix      | 1–3 letters (I and O never used; no vowel in 2nd char of 3-letter prefix) |
+| Numbers     | 1–4 digits                                                     |
+| Checksum    | 1 letter (F, I, N, O, Q, V, W never used as check digits)     |
+| Max length  | 8 characters — e.g. `SBA1234A`                                |
+
+**Two LTA-approved colour schemes** (both handled automatically):
+- **White-on-black** — white text on black background (most common from dealerships)
+- **Black-on-white** (front) / **black-on-yellow** (rear) — Euro reflective scheme
+
+This system auto-detects the colour scheme on each plate crop and normalises it
+before OCR, so both schemes work without any configuration.
 
 ---
 
-## PHASE 1 — Set Up Your Machine (30 min)
+## Why This Stack
+
+| Choice    | Why                                                                      |
+|-----------|--------------------------------------------------------------------------|
+| YOLOv8n   | Detects plate *location* only — works globally regardless of plate style |
+| EasyOCR   | PyTorch-based, English support is perfect for SG's Latin alphanumerics   |
+| FastAPI   | Async, auto-docs at `/docs`, production-ready                            |
+
+No API keys. No cloud fees. Everything runs locally.
+
+---
+
+## PHASE 1 — Set Up Your Machine
 
 ### Prerequisites
-- Python 3.9 – 3.11 (3.12 can have issues with some CV libs)
+- Python 3.9–3.11
 - Git
-- ~4 GB free disk space (for model weights + dependencies)
+- ~4 GB free disk space
 
 ### Step 1: Create the project
 ```bash
-mkdir license-plate-reader && cd license-plate-reader
+mkdir sg-plate-reader && cd sg-plate-reader
 python -m venv venv
 
-# Activate virtual environment
+# Activate
+# macOS/Linux:
+source venv/bin/activate
 # Windows:
 venv\Scripts\activate
-# Mac/Linux:
-source venv/bin/activate
 ```
 
 ### Step 2: Install dependencies
 ```bash
-pip install ultralytics easyocr fastapi uvicorn python-multipart opencv-python-headless Pillow
+pip install -r requirements.txt
 ```
-
-That's it. No compiling. No CUDA required (GPU optional, CPU works fine for gantry).
 
 ---
 
-## PHASE 2 — Get a Trained Plate Detection Model (1–3 hrs)
+## PHASE 2 — Download the Pretrained Model (no training required)
 
-YOLOv8's default model detects 80 COCO classes (car, dog, etc.) but **NOT license plates**.
-You need a model fine-tuned on license plate images.
+No training required. A fully pretrained model (~6 MB) is available for free on HuggingFace.
 
-### Option A: Train on Google Colab (FREE GPU) — Recommended
-
-1. Go to [Google Colab](https://colab.research.google.com) → New Notebook
-2. Runtime → Change runtime type → **T4 GPU**
-3. Paste this into cells and run:
-
-```python
-# Cell 1 — Install
-!pip install ultralytics roboflow
-
-# Cell 2 — Download dataset from Roboflow (free, 24k images, CC BY 4.0)
-from roboflow import Roboflow
-rf = Roboflow()  # Will prompt you to log in (free account)
-project = rf.workspace("roboflow-universe-projects").project("license-plate-recognition-rxg4e")
-version = project.version(4)
-dataset = version.download("yolov8")
-
-# Cell 3 — Train (takes ~1-2 hours on T4 GPU)
-from ultralytics import YOLO
-model = YOLO("yolov8n.pt")  # nano = lightweight
-results = model.train(
-    data=f"{dataset.location}/data.yaml",
-    epochs=50,
-    imgsz=640,
-    batch=16,
-    name="plate_detector"
-)
-
-# Cell 4 — Download your trained model
-from google.colab import files
-files.download("runs/detect/plate_detector/weights/best.pt")
-```
-
-4. Save the downloaded `best.pt` into your project folder as `plate_model.pt`
-
-### Option B: Use a Community Pre-trained Model (faster, less accurate)
-
-Search [Roboflow Universe](https://universe.roboflow.com/search?q=class:%22license+plate%22)
-for "license plate" → filter by YOLOv8 → download weights.
-
-### Verify your model works
 ```bash
-python -c "
-from ultralytics import YOLO
-model = YOLO('plate_model.pt')
-print('Model loaded ✓  Classes:', model.names)
-"
+python download_model.py
 ```
-Expected output: `{0: 'License_Plate'}` or similar.
+
+That's it. This saves `plate_model.pt` in your project folder.
+
+**What you're getting:**
+
+| Detail        | Value                                                           |
+|---------------|-----------------------------------------------------------------|
+| Model         | YOLO11n (nano) from `morsetechlab/yolov11-license-plate-detection` |
+| Training data | 10,125 annotated plate images (CC BY 4.0)                      |
+| Trained for   | 300 epochs on NVIDIA A100                                       |
+| mAP@50        | 0.981                                                           |
+| Precision     | 0.989 / Recall: 0.951                                           |
+| Licence       | AGPLv3 — free for open-source projects                         |
+
+### Verify the download
+```bash
+python -c "from ultralytics import YOLO; m = YOLO('plate_model.pt'); print('OK:', m.names)"
+```
+Expected output: `OK: {0: 'license-plate'}` or similar.
 
 ---
 
-## PHASE 3 — Build the Plate Reader (the code)
+## PHASE 3 — Project Structure
 
-Your project should look like this:
 ```
-license-plate-reader/
-├── plate_model.pt        ← your trained YOLO weights
-├── plate_reader.py       ← core detection + OCR logic
+sg-plate-reader/
+├── plate_model.pt        ← downloaded YOLO weights (after running download_model.py)
+├── download_model.py     ← one-shot model download script (run this first)
+├── plate_reader.py       ← core detection + OCR + Singapore validation
 ├── server.py             ← FastAPI REST endpoint
-├── test_reader.py        ← quick local test script
+├── test_reader.py        ← local test without server
 └── requirements.txt
-```
-
-### plate_reader.py — Core Logic
-See the file in this project. Key flow:
-1. YOLO detects bounding boxes of plates in the image
-2. Crop each plate region with a small padding
-3. Preprocess the crop (grayscale, contrast enhancement)
-4. EasyOCR reads the text
-5. Post-process: strip spaces, uppercase, keep only alphanumeric
-
-### server.py — FastAPI Endpoint
-Exposes `POST /read-plate` that accepts an image and returns:
-```json
-{
-  "success": true,
-  "plates": [
-    {
-      "text": "SGX1234A",
-      "confidence": 0.94,
-      "bbox": [120, 340, 380, 420]
-    }
-  ]
-}
 ```
 
 ---
@@ -158,60 +125,60 @@ curl -X POST http://localhost:8000/read-plate \
   -F "file=@test_car.jpg"
 ```
 
-### Test with Python
-```python
-import requests
-resp = requests.post(
-    "http://localhost:8000/read-plate",
-    files={"file": open("test_car.jpg", "rb")}
-)
-print(resp.json())
+### Test locally (no server)
+```bash
+python test_reader.py plate_model.pt test_car.jpg
 ```
 
 ### Interactive docs
-Open `http://localhost:8000/docs` in your browser — you can upload images directly.
+Open `http://localhost:8000/docs` — upload images directly in the browser.
 
 ---
 
 ## PHASE 5 — Integrate with Your Gantry System
 
-Your gantry service calls this API whenever a vehicle arrives:
-
 ```python
 import requests
 
-def detect_plate(image_path: str) -> str | None:
-    """Call the plate reader API and return the plate string."""
+def detect_sg_plate(image_path: str) -> str | None:
+    """Call the plate reader API and return the Singapore plate string."""
     with open(image_path, "rb") as f:
         resp = requests.post(
             "http://plate-reader-host:8000/read-plate",
-            files={"file": f}
+            files={"file": f},
+            timeout=10,
         )
     data = resp.json()
     if data["success"] and data["plates"]:
-        return data["plates"][0]["text"]
+        return data["plates"][0]["text"]   # e.g. "SBA1234A"
     return None
 ```
 
 ---
 
-## Tips for Gantry Deployment
+## Singapore Gantry Tips
 
-1. **Camera**: Position at 1–2m height, slight downward angle toward plates
-2. **Resolution**: 1080p minimum. 640×640 is what YOLO resizes to internally
-3. **Lighting**: IR illuminator helps at night (plates are retro-reflective)
-4. **Frame selection**: Don't OCR every frame — pick the sharpest one when vehicle is stationary
-5. **Confidence threshold**: Set `DETECT_CONF=0.5` or higher to avoid false positives
-6. **Multiple reads**: Read 3–5 frames and pick the most common result (majority vote)
+| Topic             | Recommendation                                                                        |
+|-------------------|---------------------------------------------------------------------------------------|
+| Camera angle      | 1–2 m height, slight downward angle toward the rear plate                            |
+| Colour scheme     | System auto-detects; no config needed                                                 |
+| Frame selection   | Don't OCR every frame — pick the sharpest frame when the vehicle is stationary        |
+| Multiple reads    | Read 3–5 frames and take the majority-vote result for reliability                     |
+| Confidence        | Start with `DETECT_CONF=0.5`; lower to `0.35` if plates are missed                   |
+| Night / rain      | IR illuminator recommended — SG plates are retro-reflective (LTA requirement)         |
+| Off-peak cars     | Red plate, same alphanumeric format — detected correctly                              |
+| EV/PHEV plates    | LTA announced green plates (2026) — same format, no code changes needed               |
 
 ---
 
 ## Troubleshooting
 
-| Problem | Fix |
-|---------|-----|
-| `ModuleNotFoundError` | Make sure venv is activated |
-| YOLO finds no plates | Lower `DETECT_CONF` to 0.3, check image quality |
-| OCR reads garbage | Check the crop preview, improve lighting/angle |
-| Slow on CPU | Use `yolov8n` (nano), set `DETECT_CONF=0.5` to reduce processing |
-| Wrong characters | Add post-processing rules for your plate format (see `_clean_plate_text`) |
+| Problem                        | Fix                                                                         |
+|--------------------------------|-----------------------------------------------------------------------------|
+| No plates detected             | Lower `DETECT_CONF` to 0.35; check image is at least 640 px wide           |
+| Valid plate rejected           | Check the plate uses standard LTA format; off-peak/special plates may vary  |
+| OCR reads wrong characters     | Ensure plate is well-lit and not at extreme angle (>30° horizontal skew)    |
+| White-on-black plate garbled   | Auto-inversion is in `_normalise_colour_scheme`; check mean brightness      |
+| `ModuleNotFoundError`          | Ensure venv is activated: `source venv/bin/activate`                        |
+| Slow on CPU                    | YOLOv8n is already the fastest; set `DETECT_CONF=0.6` to reduce candidates  |
+| Model not found (503)          | Set `MODEL_PATH` env var or place `plate_model.pt` in the project folder    |
