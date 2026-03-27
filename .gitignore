@@ -1,11 +1,24 @@
-/dataset
-/sg-anpr
-/anpr-files
-/labelImg-pyside6
+# Model weights (too large for git — store separately)
+*.pt
+*.onnx
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
 .DS_Store
-License-Plate-Recognition-YOLOv7-and-CNN-main.zip
-generate.py
-/License-Plate-Recognition-YOLOv7-and-CNN-main/data
-/trained-model-weights
-/src/weights
-.venv
+Thumbs.db
+
+# Test outputs
+test_output.jpg
+webcam_capture.jpg
+
+# Env
+.env

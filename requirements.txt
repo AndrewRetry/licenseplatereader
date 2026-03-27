@@ -1,0 +1,18 @@
+# License Plate Reader — Dependencies
+# Install: pip install -r requirements.txt
+
+# Detection (YOLOv8)
+ultralytics>=8.0.0
+
+# OCR
+easyocr>=1.7.0
+
+# Image processing
+opencv-python-headless>=4.8.0
+Pillow>=10.0.0
+numpy>=1.24.0
+
+# API server
+fastapi>=0.100.0
+uvicorn>=0.23.0
+python-multipart>=0.0.6

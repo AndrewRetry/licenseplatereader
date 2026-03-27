@@ -1,143 +1,217 @@
-# License Plate Detection And Recognition Tool
+# Gantry License Plate Reader — Beginner Tutorial
 
-# Table of Contents
+A lightweight license plate detection + OCR system exposed as a REST API.
+Returns the plate string from an image.
 
-- [Overview](#overview)
-- [Demo](#demo)
-- [Features](#features)
-- [Usage](#usage)
-- [Methodology](#methodology)
-- [Conclusion](#conclusion)
+## Architecture
 
-# Overview
-This project covers a License Plate Detection and Recognition Tool built upon YOLOv4/YOLOv7 for license plate detection and PaddleOCR for license plate character recognition. It allows the processing of images and videos to accurately detect license plates and extract their characters, enabling a variety of applications such as traffic monitoring, parking management, and law enforcement.
+```
+Camera/Image ──► YOLOv8n (detect plate) ──► Crop ──► EasyOCR (read text) ──► "SGX1234A"
+                    ~6 MB model              OpenCV       PyTorch-based
+```
 
-# Demo
-![](https://github.com/xavierkoo/computer_vision_anpr_alpr/blob/main/content/demo_video.gif)
-![](https://github.com/xavierkoo/computer_vision_anpr_alpr/blob/main/content/carpark_demo.png)
+**Why this stack (not the repo's YOLOv7 + PaddleOCR)?**
 
-# Features
-- License plate detection using state-of-the-art YOLOv4/YOLOv7 models.
-- Accurate license plate character recognition using PaddleOCR.
+| Choice        | Why                                                        |
+|---------------|------------------------------------------------------------|
+| YOLOv8n       | Same accuracy, 1-line pip install, no cloning repos needed |
+| EasyOCR       | PyTorch-based (same as YOLO), simpler install than Paddle  |
+| FastAPI       | Async, auto-docs at `/docs`, production-ready              |
 
-# Usage
-You can access the central notebook for training the YOLOv7 license plate detection model and executing the detector and character recognition (PaddleOCR): [YOLOv7 License Plate Detection & Recognition](https://github.com/xavierkoo/computer_vision_anpr_alpr/blob/main/yolo_v7_license_plate_detection.ipynb)
+Everything is **free and open-source**. No API keys needed.
 
-An earlier iteration that uses YOLOv4 with Darknet and PaddleOCR: [YOLOv4 License Plate Detection & Recognition](https://github.com/xavierkoo/computer_vision_anpr_alpr/blob/main/content/ALPR_Implementation.ipynb)
+---
 
-# Methodology
-- [Objective](#objective)
-- [Data Collection](#data-collection)
-- [Preprocessing & Annotation](#preprocessing--annotation)
-- [License Plate Detection](#license-plate-detection)
-- [License Plate Recognition](#license-plate-recognition)
+## PHASE 1 — Set Up Your Machine (30 min)
 
-## Objective
-License plate detection and character recognition of images and videos. A sequential methodology was employed, consisting of a two-step process: initially utilizing the one-stage detector YOLO for license plate detection, followed by subsequent Optical Character Recognition (OCR) performed using PaddleOCR on the identified license plates.
+### Prerequisites
+- Python 3.9 – 3.11 (3.12 can have issues with some CV libs)
+- Git
+- ~4 GB free disk space (for model weights + dependencies)
 
-## Data Collection
-- [Google Open Images Dataset](https://storage.googleapis.com/openimages/web/visualizer/index.html?type=detection&set=train&c=%2Fm%2F01jfm_) (Baseline Data)
+### Step 1: Create the project
+```bash
+mkdir license-plate-reader && cd license-plate-reader
+python -m venv venv
 
-The Google Open Images Dataset encompasses a pre-annotated collection comprising 1500 training images and 300 validation images, meticulously organized in the YOLO format. These images capture a variety of vehicles with their respective license plates from various global locations. However, it's important to note that the dataset does not include instances of double-line license plates, a prevalent type of license plate found in Singapore.
+# Activate virtual environment
+# Windows:
+venv\Scripts\activate
+# Mac/Linux:
+source venv/bin/activate
+```
 
-- [nuScenes](https://www.nuscenes.org/nuimages#download) (Singapore Data)
-- [Street Driving Videos](https://www.youtube.com/watch?v=vBySF9eSKQs&ab_channel=JUtah) (Singapore Data)
+### Step 2: Install dependencies
+```bash
+pip install ultralytics easyocr fastapi uvicorn python-multipart opencv-python-headless Pillow
+```
 
-To address the constraints of the Google Open Images Dataset and facilitate enhanced training on Singapore-specific data, we can leverage the nuScenes and Street Driving Videos datasets. By integrating these additional datasets, our model gains the capacity to capture nuances and intricacies unique to Singapore's license plate characteristics.
+That's it. No compiling. No CUDA required (GPU optional, CPU works fine for gantry).
 
-- Carpark CCTV Footage (CCTV Data)
+---
 
-The Carpark CCTV Footage Dataset plays a pivotal role in training the model to recognize license plates under distinct conditions. By exposing the model to the distinctive angles and image qualities prevalent in CCTV camera footage, we ensure its proficiency in identifying license plates accurately even in challenging scenarios.
+## PHASE 2 — Get a Trained Plate Detection Model (1–3 hrs)
 
-To reduce the time taken for data collection, videos can be split into frames with the file `vid2img.py` located [here](https://github.com/xavierkoo/computer_vision_anpr_alpr/blob/main/License-Plate-Recognition-YOLOv7-and-CNN-main/vid2img.py).
+YOLOv8's default model detects 80 COCO classes (car, dog, etc.) but **NOT license plates**.
+You need a model fine-tuned on license plate images.
 
-The datasets were split into 70/20/10 for the train-validation-test split.
+### Option A: Train on Google Colab (FREE GPU) — Recommended
 
-## Preprocessing & Annotation
-Image preprocessing is not required as YOLO automatically resizes the images. Annotations for images were done with [labelImg](https://github.com/HumanSignal/labelImg#create-pre-defined-classes) in the YOLO format where we will have a `.txt` file in the same folder with the image. The `.txt` file contains the labels for the normalized bounding box coordinates(x,y,w,h) of all license plates found in the image.
+1. Go to [Google Colab](https://colab.research.google.com) → New Notebook
+2. Runtime → Change runtime type → **T4 GPU**
+3. Paste this into cells and run:
 
-![](https://github.com/xavierkoo/computer_vision_anpr_alpr/blob/main/content/labelImg_demo.png)
+```python
+# Cell 1 — Install
+!pip install ultralytics roboflow
 
-## License Plate Detection
-### YOLOv4
-YOLOv4 was implemented with the Darknet framework, an open-source neural network framework written in C and CUDA. YOLOv4 uses CSPDarknet53 CNN which means, its backbone for object detection uses Darknet53 which has a total of 53 convolutional layers. 
+# Cell 2 — Download dataset from Roboflow (free, 24k images, CC BY 4.0)
+from roboflow import Roboflow
+rf = Roboflow()  # Will prompt you to log in (free account)
+project = rf.workspace("roboflow-universe-projects").project("license-plate-recognition-rxg4e")
+version = project.version(4)
+dataset = version.download("yolov8")
 
-Achieved Mean Average Precision (mAP) of 90% when trained on Google's Open Image Dataset. A notable limitation for this iteration is the model's inability to detect double-line plates.
+# Cell 3 — Train (takes ~1-2 hours on T4 GPU)
+from ultralytics import YOLO
+model = YOLO("yolov8n.pt")  # nano = lightweight
+results = model.train(
+    data=f"{dataset.location}/data.yaml",
+    epochs=50,
+    imgsz=640,
+    batch=16,
+    name="plate_detector"
+)
 
-### YOLOv7
-With better real-time license plate detection, YOLOv7 surpasses all known object detectors in both speed and accuracy in the range from 5 FPS to 160 FPS and has the highest accuracy 56.8% AP among all known real-time object detectors with 30 FPS or higher on GPU V100.
+# Cell 4 — Download your trained model
+from google.colab import files
+files.download("runs/detect/plate_detector/weights/best.pt")
+```
 
-Attained a Mean Average Precision (mAP) of 90% through a systematic transfer learning approach. This was realized by executing multiple training iterations, commencing with a foundational baseline training using Google's Open Image Dataset, and subsequently progressing to Singapore-centric datasets to fine-tune the model.
+4. Save the downloaded `best.pt` into your project folder as `plate_model.pt`
 
-![](https://github.com/xavierkoo/computer_vision_anpr_alpr/blob/main/content/train_demo.png)
-![](https://github.com/xavierkoo/computer_vision_anpr_alpr/blob/main/content/train_demo2.png)
+### Option B: Use a Community Pre-trained Model (faster, less accurate)
 
-#### Training Configurations & Considerations
-**1. Batch Size**
+Search [Roboflow Universe](https://universe.roboflow.com/search?q=class:%22license+plate%22)
+for "license plate" → filter by YOLOv8 → download weights.
 
-When configuring your training, the choice of batch size plays a pivotal role in optimizing the learning process. Different batch sizes offer distinct advantages and considerations:
+### Verify your model works
+```bash
+python -c "
+from ultralytics import YOLO
+model = YOLO('plate_model.pt')
+print('Model loaded ✓  Classes:', model.names)
+"
+```
+Expected output: `{0: 'License_Plate'}` or similar.
 
-- **Larger batch size:** Leveraging a larger batch size can harness the parallel processing capabilities of GPUs, potentially leading to expedited training times. However, be cautious with very large batch sizes, as they might demand substantial GPU memory, impacting the maximum feasible batch size.
+---
 
-- **Smaller batch size:** Opting for smaller batch sizes proves beneficial when GPU memory is constrained, as they consume less memory. Yet, excessively diminutive batch sizes can yield noisy gradients and protracted convergence.
+## PHASE 3 — Build the Plate Reader (the code)
 
-In practice, adhere to this rule of thumb: initiate training with a moderately sized batch that fits comfortably within your GPU memory. Subsequently, experiment with both larger and smaller batch sizes to gauge their effects on training speed and convergence. Frequently observed batch sizes are often powers of 2, such as 8, 16, 32, and 64. In my iterations I used a batch size of 16.
+Your project should look like this:
+```
+license-plate-reader/
+├── plate_model.pt        ← your trained YOLO weights
+├── plate_reader.py       ← core detection + OCR logic
+├── server.py             ← FastAPI REST endpoint
+├── test_reader.py        ← quick local test script
+└── requirements.txt
+```
 
-**2. Number of Epochs**
+### plate_reader.py — Core Logic
+See the file in this project. Key flow:
+1. YOLO detects bounding boxes of plates in the image
+2. Crop each plate region with a small padding
+3. Preprocess the crop (grayscale, contrast enhancement)
+4. EasyOCR reads the text
+5. Post-process: strip spaces, uppercase, keep only alphanumeric
 
-An epoch refers to one complete pass through the entire training dataset. During each epoch, the model will be fed with different batches of data for optimization, with the aim to improve its ability to detect objects accurately.
+### server.py — FastAPI Endpoint
+Exposes `POST /read-plate` that accepts an image and returns:
+```json
+{
+  "success": true,
+  "plates": [
+    {
+      "text": "SGX1234A",
+      "confidence": 0.94,
+      "bbox": [120, 340, 380, 420]
+    }
+  ]
+}
+```
 
-- **Too few epochs:** If you train for too few epochs, the model may not have enough time to converge and reach its optimal performance. The model might underfit and not generalize well to new data.
+---
 
-- **Too many epochs:** Training for too many epochs may lead to overfitting, where the model becomes too specialized to the training data and performs poorly on new, unseen data.
+## PHASE 4 — Run It
 
-Monitor your model's performance on a validation set during training. Typically, you should stop training when the validation loss stops decreasing or starts to increase (indicating overfitting). You can also use techniques like learning rate scheduling and early stopping to help with finding the optimal number of epochs.
+### Start the API server
+```bash
+python server.py
+```
+Server starts at `http://localhost:8000`
 
-#### Training Metrics
-**1. mAP (mean Average Precision)**
+### Test with curl
+```bash
+curl -X POST http://localhost:8000/read-plate \
+  -F "file=@test_car.jpg"
+```
 
-Evaluation metric used to assess the performance of object detection models. It quantifies how well the model detects objects of interest, and it takes into account both precision and recall.
+### Test with Python
+```python
+import requests
+resp = requests.post(
+    "http://localhost:8000/read-plate",
+    files={"file": open("test_car.jpg", "rb")}
+)
+print(resp.json())
+```
 
-**mAP@.5**:
-- This metric calculates the mean Average Precision when the IoU (Intersection over Union) threshold is set to 0.5.
-- IoU is a measure of how well the predicted bounding boxes overlap with the ground-truth bounding boxes.
-- When mAP is calculated with an IoU threshold of 0.5, it means that a predicted bounding box is considered correct if it has an IoU of 0.5 or higher with the corresponding ground-truth bounding box.
-- A higher mAP@.5 score indicates that the model is good at localizing objects, and at least 50% of the object's region is correctly predicted.
+### Interactive docs
+Open `http://localhost:8000/docs` in your browser — you can upload images directly.
 
-**mAP@.5:.95**:
-- This metric calculates the mean Average Precision over a range of IoU thresholds from 0.5 to 0.95.
-- Instead of considering a single IoU threshold (as in mAP@.5), this metric provides a more comprehensive evaluation across a range of IoU values.
-- The IoU threshold is gradually increased from 0.5 to 0.95, and the precision and recall are computed for each threshold.
-- The final mAP@.5:.95 score is the average of all the calculated Average Precisions across the IoU range.
-- A higher mAP@.5:.95 score indicates that the model performs well across various levels of strictness in bounding box matching.
+---
 
-In summary, both mAP@.5 and mAP@.5:.95 are used to evaluate the object detection model's performance, but mAP@.5:.95 provides a more detailed assessment by considering multiple IoU thresholds, reflecting how well the model performs at different levels of bounding box overlap. Higher mAP scores generally indicate better object detection performance.
+## PHASE 5 — Integrate with Your Gantry System
 
-**2. Best Possible Recall (BPR)**
+Your gantry service calls this API whenever a vehicle arrives:
 
-A metric that measures the proportion of actual positive samples (objects) that are correctly identified by the model. "Best Possible Recall (BPR) = 1.0000" means that the model achieved a recall of 1.0000, which indicates that it correctly detected all the objects in the dataset.
+```python
+import requests
 
-**3. box, obj, cls, total**
+def detect_plate(image_path: str) -> str | None:
+    """Call the plate reader API and return the plate string."""
+    with open(image_path, "rb") as f:
+        resp = requests.post(
+            "http://plate-reader-host:8000/read-plate",
+            files={"file": f}
+        )
+    data = resp.json()
+    if data["success"] and data["plates"]:
+        return data["plates"][0]["text"]
+    return None
+```
 
-These columns represent different loss values during training. Losses are measures of how well the model is performing during each epoch.
+---
 
-- **box:** Represents the localization loss, which measures the accuracy of predicting the bounding box coordinates.
-- **obj:** Stands for the objectness loss, measuring the confidence of predicting whether an object is present in the bounding box.
-- **cls:** Denotes the classification loss, which measures the accuracy of predicting the class label of the object within the bounding box.
-- **total:** The total loss, which is the sum of all the individual losses (box, obj, cls).
+## Tips for Gantry Deployment
 
-**4. Class Metrics**
+1. **Camera**: Position at 1–2m height, slight downward angle toward plates
+2. **Resolution**: 1080p minimum. 640×640 is what YOLO resizes to internally
+3. **Lighting**: IR illuminator helps at night (plates are retro-reflective)
+4. **Frame selection**: Don't OCR every frame — pick the sharpest one when vehicle is stationary
+5. **Confidence threshold**: Set `DETECT_CONF=0.5` or higher to avoid false positives
+6. **Multiple reads**: Read 3–5 frames and pick the most common result (majority vote)
 
-- **Class:** The name of the object class being evaluated.
-- **Images:** The number of images in the dataset containing instances of the specific class.
-- **Labels:** The total number of instances (bounding boxes) of the specific class present in the dataset.
-- **P:** Precision, which measures the percentage of correctly predicted positive instances out of all predicted instances of the class.
-- **R:** Recall, which measures the percentage of correctly predicted positive instances out of all instances of the class present in the dataset.
-- **"all"**: Refers to the aggregated metrics for all object classes, not just for a specific class.
+---
 
-## License Plate Recognition
-Instead of employing the Hough Transform alignment along with character segmentation and recognition to extract characters from the detected license plate, an alternative approach was adopted. Optical character recognition (OCR) using [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) was chosen as the method to accurately decipher characters from the identified license plate.
+## Troubleshooting
 
-PaddleOCR uses the CRNN recognition algorithm. CRNN (Convolutional Recurrent Neural Network) is a popular architecture for text recognition tasks, including optical character recognition (OCR). It combines convolutional neural networks (CNNs) and recurrent neural networks (RNNs) to effectively handle the sequential nature of text while capturing spatial information from input images.
-
-![](https://github.com/xavierkoo/computer_vision_anpr_alpr/blob/main/content/two_line_demo.png)
+| Problem | Fix |
+|---------|-----|
+| `ModuleNotFoundError` | Make sure venv is activated |
+| YOLO finds no plates | Lower `DETECT_CONF` to 0.3, check image quality |
+| OCR reads garbage | Check the crop preview, improve lighting/angle |
+| Slow on CPU | Use `yolov8n` (nano), set `DETECT_CONF=0.5` to reduce processing |
+| Wrong characters | Add post-processing rules for your plate format (see `_clean_plate_text`) |
