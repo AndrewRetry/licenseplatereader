@@ -11,11 +11,18 @@ Saved debug images per detected region:
 
 Usage:
   python test_reader.py plate_model.pt test_car.jpg
-  python test_reader.py plate_model.pt            # uses webcam frame
+  python test_reader.py plate_model.pt            # uses webcam / DroidCam frame
+
+DroidCam note:
+  DroidCam registers as a DirectShow virtual device — MSMF (Windows default backend)
+  cannot see it and will always return black frames. This script uses CAP_DSHOW
+  exclusively and scans indices 0–_WEBCAM_MAX_INDEX to find whatever index
+  DroidCam was assigned.
 """
 
 import re
 import sys
+import time
 import logging
 
 import cv2
@@ -24,6 +31,64 @@ import numpy as np
 from plate_reader import PlateReader
 
 logging.basicConfig(level=logging.WARNING)   # suppress library noise
+
+# Scan this many indices looking for any working camera (DroidCam can land anywhere)
+_WEBCAM_MAX_INDEX = 6
+
+# After open(), wait up to this long for a non-black frame (real cameras need time)
+_WEBCAM_RETRY_DELAY  = 0.1   # seconds between reads
+_WEBCAM_RETRIES      = 15    # 15 × 0.1 s = 1.5 s max per index
+_WEBCAM_MIN_BRIGHTNESS = 10.0
+
+
+def _scan_dshow_cameras() -> None:
+    """
+    Print which DirectShow indices open successfully.
+    Useful for diagnosing which index DroidCam is on.
+    """
+    print("  Scanning DirectShow camera indices...")
+    for i in range(_WEBCAM_MAX_INDEX):
+        cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
+        if cap.isOpened():
+            ret, frame = cap.read()
+            brightness = float(np.mean(frame)) if (ret and frame is not None) else 0.0
+            print(f"    index {i}: opened  brightness={brightness:.1f}")
+            cap.release()
+        else:
+            print(f"    index {i}: not available")
+
+
+def _try_camera_dshow(index: int) -> tuple[cv2.VideoCapture | None, np.ndarray | None]:
+    """
+    Open a DirectShow camera at the given index and wait for a usable frame.
+
+    Uses CAP_DSHOW exclusively — DroidCam and other virtual cameras are
+    DirectShow devices and are invisible to MSMF (Windows Media Foundation).
+
+    Returns (cap, frame) on success, (None, None) on failure.
+    """
+    cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+    if not cap.isOpened():
+        return None, None
+
+    # Ask for a standard resolution — prompts DirectShow to negotiate format
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+
+    for attempt in range(_WEBCAM_RETRIES):
+        ret, frame = cap.read()
+        if ret and frame is not None:
+            brightness = float(np.mean(frame))
+            if brightness > _WEBCAM_MIN_BRIGHTNESS:
+                return cap, frame
+            print(
+                f"    index {index}: attempt {attempt + 1:02d}/{_WEBCAM_RETRIES}"
+                f"  brightness={brightness:.1f}"
+            )
+        time.sleep(_WEBCAM_RETRY_DELAY)
+
+    cap.release()
+    return None, None
 
 
 def test_with_image(model_path: str, image_path: str) -> None:
@@ -132,32 +197,39 @@ def test_with_image(model_path: str, image_path: str) -> None:
 
 
 def test_with_webcam(model_path: str) -> None:
-    print("\n--- Capturing from webcam ---")
+    print("\n--- Capturing from webcam (DirectShow only) ---")
 
-    # Try DirectShow first (more reliable on Windows), fall back to default
-    for backend in [cv2.CAP_DSHOW, cv2.CAP_ANY]:
-        cap = cv2.VideoCapture(1, backend)
-        if cap.isOpened():
+    # Show a full scan first so the user knows exactly what's visible
+    _scan_dshow_cameras()
+
+    cap = None
+    frame = None
+    used_index = None
+
+    for index in range(_WEBCAM_MAX_INDEX):
+        cap, frame = _try_camera_dshow(index)
+        if cap is not None:
+            used_index = index
             break
-    else:
-        print("No webcam available. Provide an image path instead.")
+
+    if cap is None:
+        print(
+            "\nNo usable camera found via DirectShow.\n"
+            "  If using DroidCam:\n"
+            "    - Open the DroidCam Windows client and confirm it shows 'connected'\n"
+            "    - The phone and PC must be on the same Wi-Fi, or connected via USB\n"
+            "    - Try the DroidCam app's built-in test — if that shows black, it's a DroidCam issue\n"
+            "  Otherwise:\n"
+            f"    - Increase _WEBCAM_MAX_INDEX (currently {_WEBCAM_MAX_INDEX})\n"
+            "    - Pass an image directly:  python test_reader.py plate_model.pt image.jpg"
+        )
         return
 
-    # Warm up — discard frames while camera auto-adjusts
-    print("  Warming up camera...")
-    for _ in range(30):
-        cap.read()
-
-    ret, frame = cap.read()
     cap.release()
-
-    if not ret or frame is None or float(np.mean(frame)) < 5:
-        print("Failed to capture a usable frame.")
-        return
 
     capture_path = "webcam_capture.jpg"
     cv2.imwrite(capture_path, frame)
-    print(f"  Saved {capture_path}")
+    print(f"\n  Saved {capture_path}  (camera index={used_index}, backend=DirectShow)")
     test_with_image(model_path, capture_path)
 
 
