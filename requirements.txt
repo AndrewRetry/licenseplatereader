@@ -1,11 +1,13 @@
 # License Plate Reader — Dependencies
 # Install: pip install -r requirements.txt
 
-# Detection (YOLOv8)
+# Detection (YOLO11n)
 ultralytics>=8.0.0
 
-# OCR
-easyocr>=1.7.0
+# OCR (TrOCR — transformer-based, handles Charles Wright plate font accurately)
+transformers>=4.35.0
+torch>=2.0.0
+torchvision>=0.15.0
 
 # Image processing
 opencv-python-headless>=4.8.0
@@ -17,5 +19,5 @@ fastapi>=0.100.0
 uvicorn>=0.23.0
 python-multipart>=0.0.6
 
-# Model download (no training required)
+# Model download
 huggingface_hub>=0.20.0

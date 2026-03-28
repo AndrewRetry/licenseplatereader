@@ -3,6 +3,12 @@ test_reader.py — Debug-first test for the Singapore plate reader.
 
 Prints every pipeline stage so you can see exactly where things break.
 
+Saved debug images per detected region:
+  debug_crop_N.jpg        — raw YOLO crop
+  debug_normalised_N.jpg  — after colour scheme inversion (what used to go to TrOCR)
+  debug_processed_N.jpg   — after CLAHE preprocessing (what actually goes to TrOCR)
+  test_output.jpg         — annotated final result
+
 Usage:
   python test_reader.py plate_model.pt test_car.jpg
   python test_reader.py plate_model.pt            # uses webcam frame
@@ -51,40 +57,44 @@ def test_with_image(model_path: str, image_path: str) -> None:
         print(f"    [{i+1}] conf={conf:.3f}  bbox={[round(v) for v in bbox]}")
 
     # ----------------------------------------------------------------
-    # STEP 2–4: Walk through every detected region
+    # STEP 2–5: Walk through every detected region
     # ----------------------------------------------------------------
     final_plates = []
 
     for i, (bbox, conf) in enumerate(detections):
         x1, y1, x2, y2 = bbox
-        print(f"\n[Step 2–4] Region {i+1}  (conf={conf:.3f})")
+        print(f"\n[Steps 2–5] Region {i+1}  (conf={conf:.3f})")
 
-        # Crop
+        # Step 2: Crop
         crop = reader._crop_plate(image, x1, y1, x2, y2)
         crop_path = f"debug_crop_{i+1}.jpg"
         cv2.imwrite(crop_path, crop)
-        print(f"  Crop: {crop.shape[1]} x {crop.shape[0]} px  → saved {crop_path}")
+        print(f"  [2] Crop:       {crop.shape[1]} x {crop.shape[0]} px  → {crop_path}")
 
-        # Colour normalisation
+        # Step 3: Colour normalisation
         normalised = reader._normalise_colour_scheme(crop)
         mean_brightness = float(np.mean(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)))
         scheme = "white-on-black (inverted)" if mean_brightness < 100 else "black-on-white/yellow"
-        print(f"  Colour scheme: {scheme}  (mean brightness={mean_brightness:.0f})")
         norm_path = f"debug_normalised_{i+1}.jpg"
         cv2.imwrite(norm_path, normalised)
-        print(f"  Normalised → {norm_path}  (this is what TrOCR sees)")
+        print(f"  [3] Normalised: {scheme}  (mean brightness={mean_brightness:.0f})  → {norm_path}")
 
-        # TrOCR
+        # Step 4: CLAHE preprocessing — what TrOCR actually receives
+        processed_rgb = reader._preprocess_for_ocr(normalised)
+        proc_path = f"debug_processed_{i+1}.jpg"
+        cv2.imwrite(proc_path, cv2.cvtColor(processed_rgb, cv2.COLOR_RGB2BGR))
+        print(f"  [4] Processed:  CLAHE enhanced  → {proc_path}  (this is what TrOCR sees)")
+
+        # Step 5: TrOCR
         raw_text = reader._ocr_read(normalised)
-        print(f"  TrOCR raw:  '{raw_text}'")
+        print(f"  [5] TrOCR raw:  '{raw_text}'")
 
         if not raw_text.strip():
-            print("  ✗ TrOCR returned empty — crop may be too small or blurry")
+            print("      ✗ TrOCR returned empty — crop may be too small or blurry")
             continue
 
-        # Clean
         cleaned = re.sub(r"[^A-Z0-9]", "", raw_text.upper().strip())
-        print(f"  Cleaned:    '{cleaned}'")
+        print(f"      Cleaned:    '{cleaned}'")
 
         if cleaned:
             final_plates.append({
@@ -149,6 +159,7 @@ def test_with_webcam(model_path: str) -> None:
     cv2.imwrite(capture_path, frame)
     print(f"  Saved {capture_path}")
     test_with_image(model_path, capture_path)
+
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:

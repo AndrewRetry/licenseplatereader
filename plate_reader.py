@@ -3,13 +3,20 @@ plate_reader.py — License plate detection and OCR engine, tuned for Singapore 
 
 Pipeline:
   Image → YOLO11n (detect plate bbox) → Crop → Normalise colour →
-  Preprocess → TrOCR → Clean text → "QX1728A"
+  Preprocess (CLAHE) → TrOCR → Clean text → "QX1728A"
 
 Why TrOCR over EasyOCR:
   EasyOCR's general English model was not trained on license plate fonts (Charles
   Wright typeface). It commonly confuses Q→D, X→Y, 0→O on white-on-black plates.
   TrOCR (microsoft/trocr-base-printed) is a transformer trained on printed text
   and handles these characters far more reliably on CPU.
+
+Why CLAHE over binarization for preprocessing:
+  TrOCR is a ViT-based transformer pretrained on clean printed-text images — it
+  expects intact grayscale input. Hard binarization (AdaptiveThreshold, Otsu) and
+  morphological ops (erode/dilate) break character strokes, introducing noise that
+  degrades TrOCR accuracy. CLAHE enhances local contrast while preserving stroke
+  integrity, which is what the model needs.
 
 Usage:
   reader = PlateReader("plate_model.pt")
@@ -157,18 +164,34 @@ class PlateReader:
             return cv2.bitwise_not(crop)
         return crop
 
+    def _preprocess_for_ocr(self, crop: np.ndarray) -> np.ndarray:
+        """
+        Apply CLAHE contrast enhancement before TrOCR inference.
+
+        TrOCR is a ViT-based transformer pretrained on clean printed-text images.
+        It expects intact grayscale input — NOT hard-binarized pixels.
+
+        Binarization (AdaptiveThreshold, Otsu) and morphological ops (erode/dilate)
+        break character strokes and introduce noise that degrades accuracy. CLAHE
+        enhances local contrast without destroying stroke integrity.
+
+        Returns an RGB numpy array ready for TrOCRProcessor.
+        """
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4, 4))
+        enhanced = clahe.apply(gray)
+        return cv2.cvtColor(enhanced, cv2.COLOR_GRAY2RGB)
+
     def _ocr_read(self, crop: np.ndarray) -> str:
         """
         Run TrOCR on the plate crop.
 
-        TrOCR expects a PIL RGB image. We cap the width to _MAX_CROP_WIDTH
-        before inference to keep CPU latency acceptable.
+        Applies CLAHE preprocessing then caps width to _MAX_CROP_WIDTH
+        to keep CPU inference latency acceptable.
         """
-        # BGR → RGB PIL image
-        rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+        rgb = self._preprocess_for_ocr(crop)
         pil_img = Image.fromarray(rgb)
 
-        # Cap width to limit TrOCR inference time on CPU
         if pil_img.width > _MAX_CROP_WIDTH:
             ratio = _MAX_CROP_WIDTH / pil_img.width
             pil_img = pil_img.resize(

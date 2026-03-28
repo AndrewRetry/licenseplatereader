@@ -16,8 +16,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY plate_reader.py server.py ./
 
-# EasyOCR downloads models on first run — pre-download them
-RUN python -c "import easyocr; easyocr.Reader(['en'], gpu=False)"
+# TrOCR downloads ~400 MB from HuggingFace on first run — bake into image
+# so container startup is instant and works fully offline
+RUN python -c "\
+    from transformers import TrOCRProcessor, VisionEncoderDecoderModel; \
+    TrOCRProcessor.from_pretrained('microsoft/trocr-base-printed'); \
+    VisionEncoderDecoderModel.from_pretrained('microsoft/trocr-base-printed')"
 
 EXPOSE 8000
 
