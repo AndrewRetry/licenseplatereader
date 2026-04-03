@@ -1,0 +1,36 @@
+# docker-compose.yml — Local dev stack for the Gantry LPR microservice
+#
+# Start:   docker compose up -d
+# Logs:    docker compose logs -f gantry-lpr
+# RabbitMQ UI:  http://localhost:15673  (guest / guest)
+# Plate API:    http://localhost:8081/docs
+# Stop:    docker compose down
+
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"   # AMQP Protocol
+      - "15672:15672" # Management UI
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  gantry-lpr:
+    build: .
+    ports:
+      - "8081:8000"
+    volumes:
+      - ./plate_model.pt:/app/plate_model.pt:ro
+    environment:
+      - AMQP_URL=amqp://guest:guest@rabbitmq:5672/
+      - GANTRY_ID=gantry-01
+      - DETECT_CONF=0.5
+      - HF_TOKEN=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
+      # Uncomment to auto-start the stream on boot:
+      - STREAM_URL=http://host.docker.internal:8080/video
+    depends_on:
+      rabbitmq:
+        condition: service_healthy

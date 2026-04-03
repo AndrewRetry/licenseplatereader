@@ -1,11 +1,11 @@
-# License Plate Reader — Dependencies
+# Gantry License Plate Reader — Dependencies
 # Install: pip install -r requirements.txt
 
-# Detection (YOLO11n)
+# Detection (YOLO11n fine-tuned for plate localisation)
 ultralytics>=8.0.0
 
-# OCR (TrOCR — transformer-based, handles Charles Wright plate font accurately)
-transformers>=4.35.0
+# OCR (TrOCR — transformer-based, handles SG Charles Wright typeface)
+transformers>=4.36.0
 torch>=2.0.0
 torchvision>=0.15.0
 
@@ -18,6 +18,10 @@ numpy>=1.24.0
 fastapi>=0.100.0
 uvicorn>=0.23.0
 python-multipart>=0.0.6
+pydantic>=2.0.0
 
-# Model download
+# Message broker (RabbitMQ async client)
+aio-pika>=9.0.0
+
+# Model download (one-time setup)
 huggingface_hub>=0.20.0
