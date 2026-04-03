@@ -20,6 +20,8 @@ services:
 
   gantry-lpr:
     build: .
+    env_file:
+      - .env
     ports:
       - "8081:8000"
     volumes:
@@ -28,9 +30,8 @@ services:
       - AMQP_URL=amqp://guest:guest@rabbitmq:5672/
       - GANTRY_ID=gantry-01
       - DETECT_CONF=0.5
-      - HF_TOKEN=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
-      # Uncomment to auto-start the stream on boot:
-      - STREAM_URL=http://host.docker.internal:8080/video
+      - HF_TOKEN=${HF_TOKEN}
+      - STREAM_URL=${STREAM_URL}
     depends_on:
       rabbitmq:
         condition: service_healthy
