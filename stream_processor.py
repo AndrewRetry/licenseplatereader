@@ -88,7 +88,10 @@ class StreamProcessor:
         Args:
             reader:              Initialised PlateReader instance.
             publisher:           RabbitMQ publisher (None → log-only mode).
-            stream_url:          RTSP or MJPEG URL.
+            stream_url:          RTSP/MJPEG URL, or a webcam index as a string
+                                 (e.g. "0", "1").  Webcam indices only work when
+                                 running locally — Docker can't see USB devices
+                                 on Windows.
             gantry_id:           Identifier for this gantry (included in events).
             process_interval_s:  Seconds between processing attempts.
             cooldown_s:          Seconds before the same plate can fire again.
@@ -109,6 +112,29 @@ class StreamProcessor:
         self._detection_log: deque[dict] = deque(maxlen=_MAX_LOG_ENTRIES)
 
     # ------------------------------------------------------------------
+    # Camera open helper
+    # ------------------------------------------------------------------
+
+    def _open_capture(self) -> cv2.VideoCapture:
+        """Open a VideoCapture from a URL or a local webcam index.
+
+        If ``self._stream_url`` is a digit string (e.g. "0", "1"), it is
+        treated as a local webcam index.  On Windows this uses the
+        DirectShow backend (``CAP_DSHOW``) because MSMF often returns
+        black frames for virtual cameras like DroidCam.
+
+        Otherwise it is treated as a URL (RTSP, MJPEG over HTTP, etc.).
+        """
+        if self._stream_url.isdigit():
+            index = int(self._stream_url)
+            # Use DirectShow on Windows; default backend elsewhere
+            import sys
+            if sys.platform == "win32":
+                return cv2.VideoCapture(index, cv2.CAP_DSHOW)
+            return cv2.VideoCapture(index)
+        return cv2.VideoCapture(self._stream_url)
+
+    # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
@@ -119,9 +145,12 @@ class StreamProcessor:
             return
 
         # Verify the stream can be opened before backgrounding
-        cap = cv2.VideoCapture(self._stream_url)
+        cap = self._open_capture()
         if not cap.isOpened():
-            raise ConnectionError(f"Cannot open camera stream: {self._stream_url}")
+            raise ConnectionError(
+                f"Cannot open camera: {self._stream_url}"
+                + (" (webcam index)" if self._stream_url.isdigit() else " (stream URL)")
+            )
         cap.release()
 
         self._running = True
@@ -173,7 +202,7 @@ class StreamProcessor:
         backoff = _RECONNECT_BASE_S
 
         while self._running:
-            cap = await asyncio.to_thread(cv2.VideoCapture, self._stream_url)
+            cap = await asyncio.to_thread(self._open_capture)
 
             if not cap.isOpened():
                 logger.warning(
