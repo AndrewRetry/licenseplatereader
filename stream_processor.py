@@ -3,28 +3,6 @@ stream_processor.py — Continuous camera stream → plate detection → event p
 
 Connects to an RTSP/MJPEG camera, grabs frames at a configurable interval,
 runs the plate reader pipeline, deduplicates, and publishes events to RabbitMQ.
-
-Frame selection:
-  OpenCV buffers several frames internally.  If we only call cap.read() once
-  every N seconds we get a *stale* frame, not the latest one.  The loop
-  therefore drains the buffer continuously (fast reads, no processing) and
-  only runs the heavy YOLO + TrOCR pipeline at the configured interval.
-
-  Before processing, the frame is scored for quality:
-    - Brightness  — rejects black/underexposed frames (camera glitch, cap lens)
-    - Sharpness   — Laplacian variance; rejects motion-blurred frames
-  This keeps OCR accuracy high without needing the caller to care about it.
-
-Deduplication:
-  After a plate is detected, it enters a cooldown window.  The same plate
-  text will not fire another RabbitMQ event until the cooldown expires.
-  This prevents the Arrival Orchestrator from receiving 30 duplicate events
-  while a car sits at the gantry.
-
-Camera reconnection:
-  If the stream drops (Wi-Fi blip, camera reboot), the processor retries
-  with exponential back-off up to a configurable ceiling, then keeps trying
-  at that ceiling indefinitely.  No operator intervention required.
 """
 
 import asyncio
@@ -84,18 +62,6 @@ class StreamProcessor:
         process_interval_s: float = 1.0,
         cooldown_s: float = 30.0,
     ):
-        """
-        Args:
-            reader:              Initialised PlateReader instance.
-            publisher:           RabbitMQ publisher (None → log-only mode).
-            stream_url:          RTSP/MJPEG URL, or a webcam index as a string
-                                 (e.g. "0", "1").  Webcam indices only work when
-                                 running locally — Docker can't see USB devices
-                                 on Windows.
-            gantry_id:           Identifier for this gantry (included in events).
-            process_interval_s:  Seconds between processing attempts.
-            cooldown_s:          Seconds before the same plate can fire again.
-        """
         self._reader = reader
         self._publisher = publisher
         self._stream_url = stream_url
@@ -103,68 +69,35 @@ class StreamProcessor:
         self._process_interval_s = process_interval_s
         self._cooldown_s = cooldown_s
 
-        # plate_text → monotonic timestamp of last publish
         self._recent_plates: dict[str, float] = {}
         self._running = False
         self._task: asyncio.Task | None = None
-
-        # Ring buffer of recent detections — exposed via /detections for the dashboard
         self._detection_log: deque[dict] = deque(maxlen=_MAX_LOG_ENTRIES)
 
-    # ------------------------------------------------------------------
-    # Camera open helper
-    # ------------------------------------------------------------------
-
     def _open_capture(self) -> cv2.VideoCapture:
-        """Open a VideoCapture from a URL or a local webcam index.
-
-        If ``self._stream_url`` is a digit string (e.g. "0", "1"), it is
-        treated as a local webcam index.  On Windows this uses the
-        DirectShow backend (``CAP_DSHOW``) because MSMF often returns
-        black frames for virtual cameras like DroidCam.
-
-        Otherwise it is treated as a URL (RTSP, MJPEG over HTTP, etc.).
-        """
         if self._stream_url.isdigit():
             index = int(self._stream_url)
-            # Use DirectShow on Windows; default backend elsewhere
             import sys
             if sys.platform == "win32":
                 return cv2.VideoCapture(index, cv2.CAP_DSHOW)
             return cv2.VideoCapture(index)
         return cv2.VideoCapture(self._stream_url)
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
     async def start(self) -> None:
-        """Open the stream and begin processing in a background task."""
         if self._running:
             logger.warning("Stream processor already running.")
             return
 
-        # Verify the stream can be opened before backgrounding
         cap = self._open_capture()
         if not cap.isOpened():
-            raise ConnectionError(
-                f"Cannot open camera: {self._stream_url}"
-                + (" (webcam index)" if self._stream_url.isdigit() else " (stream URL)")
-            )
+            raise ConnectionError(f"Cannot open camera: {self._stream_url}")
         cap.release()
 
         self._running = True
         self._task = asyncio.create_task(self._run_loop())
-        logger.info(
-            "Stream started  url=%s  gantry=%s  interval=%.1fs  cooldown=%.0fs",
-            self._stream_url,
-            self._gantry_id,
-            self._process_interval_s,
-            self._cooldown_s,
-        )
+        logger.info("Stream started on %s", self._stream_url)
 
     async def stop(self) -> None:
-        """Signal the loop to stop and wait for it to finish."""
         self._running = False
         if self._task:
             self._task.cancel()
@@ -180,42 +113,21 @@ class StreamProcessor:
         return self._running
 
     @property
-    def stream_url(self) -> str:
-        return self._stream_url
-
-    @property
-    def recent_plates(self) -> dict[str, float]:
-        """Snapshot of the dedup cache — useful for the /health endpoint."""
-        return dict(self._recent_plates)
-
-    @property
     def detection_log(self) -> list[dict]:
-        """Most recent detections (newest first) — feeds the dashboard."""
         return list(reversed(self._detection_log))
 
-    # ------------------------------------------------------------------
-    # Main loop
-    # ------------------------------------------------------------------
-
     async def _run_loop(self) -> None:
-        """Core loop: drain buffer → score frame → detect → dedup → publish."""
         backoff = _RECONNECT_BASE_S
-
         while self._running:
             cap = await asyncio.to_thread(self._open_capture)
-
             if not cap.isOpened():
-                logger.warning(
-                    "Cannot open stream %s — retrying in %.0fs",
-                    self._stream_url, backoff,
-                )
+                logger.warning("Cannot open stream %s — retrying in %.0fs", self._stream_url, backoff)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * _RECONNECT_FACTOR, _RECONNECT_MAX_S)
                 continue
 
-            # Connected — reset back-off
             backoff = _RECONNECT_BASE_S
-            logger.info("Camera stream connected: %s", self._stream_url)
+            logger.info("Camera stream connected.")
 
             try:
                 await self._process_stream(cap)
@@ -227,94 +139,72 @@ class StreamProcessor:
                 cap.release()
 
     async def _process_stream(self, cap: cv2.VideoCapture) -> None:
-        """Read frames from an open capture, process at the configured interval."""
         last_process_time = 0.0
 
         while self._running:
-            # Drain the buffer: read every frame so the next read is fresh
             ret, frame = await asyncio.to_thread(cap.read)
-
             if not ret or frame is None:
                 logger.warning("Lost frame — stream may have dropped.")
-                return  # exits to _run_loop which will reconnect
+                return
 
             now = time.monotonic()
             if now - last_process_time < self._process_interval_s:
-                # Yield back to the event loop between drain reads so HTTP
-                # requests and publishes aren't starved.
                 await asyncio.sleep(0.005)
                 continue
 
             last_process_time = now
 
-            # --- Frame quality gate ---
-            brightness = _frame_brightness(frame)
-            if brightness < _MIN_BRIGHTNESS:
-                logger.debug("Skipped dark frame  brightness=%.1f", brightness)
+            if _frame_brightness(frame) < _MIN_BRIGHTNESS or _frame_sharpness(frame) < _MIN_SHARPNESS:
                 continue
 
-            sharpness = _frame_sharpness(frame)
-            if sharpness < _MIN_SHARPNESS:
-                logger.debug("Skipped blurry frame  sharpness=%.1f", sharpness)
-                continue
-
-            # --- Plate detection (CPU-bound, run in thread) ---
             plates = await asyncio.to_thread(self._reader.read, frame)
             if not plates:
                 continue
 
-            # --- Dedup + publish ---
             self._prune_expired()
             timestamp = datetime.now(timezone.utc).isoformat()
 
             for plate in plates:
                 text = plate["text"]
+                is_valid = plate["checksum_valid"] # NEW
 
                 if self._is_duplicate(text):
-                    logger.debug("Duplicate skipped: %s", text)
                     continue
 
                 self._recent_plates[text] = time.monotonic()
 
-                # Append to the dashboard detection log
+                # Log with checksum status for the dashboard
                 self._detection_log.append({
                     "text": text,
                     "confidence": plate["confidence"],
                     "bbox": plate["bbox"],
                     "gantryId": self._gantry_id,
                     "timestamp": timestamp,
+                    "checksum_valid": is_valid # NEW
                 })
 
                 logger.info(
-                    "Plate detected  text=%s  conf=%.3f  gantry=%s",
-                    text, plate["confidence"], self._gantry_id,
+                    "Detected %s (conf=%.3f, valid=%s)",
+                    text, plate["confidence"], is_valid
                 )
 
                 if self._publisher:
+                    # Publisher now checks checksum_valid before firing event
                     await self._publisher.publish_plate_detected(
                         plate_text=text,
                         confidence=plate["confidence"],
                         bbox=plate["bbox"],
                         gantry_id=self._gantry_id,
+                        checksum_valid=is_valid, # NEW
                         frame_timestamp=timestamp,
                     )
 
-    # ------------------------------------------------------------------
-    # Dedup helpers
-    # ------------------------------------------------------------------
-
     def _is_duplicate(self, plate_text: str) -> bool:
         last_seen = self._recent_plates.get(plate_text)
-        if last_seen is None:
-            return False
-        return (time.monotonic() - last_seen) < self._cooldown_s
+        return False if last_seen is None else (time.monotonic() - last_seen) < self._cooldown_s
 
     def _prune_expired(self) -> None:
         now = time.monotonic()
-        expired = [
-            text
-            for text, ts in self._recent_plates.items()
-            if (now - ts) >= self._cooldown_s
-        ]
-        for text in expired:
-            del self._recent_plates[text]
+        expired = [t for t, ts in self._recent_plates.items() if (now - ts) >= self._cooldown_s]
+        for t in expired:
+            del self._recent_plates[t]

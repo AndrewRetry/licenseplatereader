@@ -1,29 +1,6 @@
-"""
-event_publisher.py — Async RabbitMQ publisher for gantry plate detection events.
-
-Publishes to a topic exchange so downstream services (Arrival Orchestrator,
-logging, analytics) can each bind with their own routing-key patterns:
-
-    vehicle.plate.detected   — a plate was read at a gantry
-    vehicle.plate.#          — all plate-related events (future: lost, corrected)
-
-Connection uses aio-pika's robust mode: if RabbitMQ restarts or the network
-blips, the connection and channel are transparently re-established.
-
-Usage:
-    publisher = EventPublisher("amqp://guest:guest@localhost:5672/")
-    await publisher.connect()
-    await publisher.publish_plate_detected(
-        plate_text="SBA1234A",
-        confidence=0.94,
-        bbox=[120, 340, 380, 420],
-        gantry_id="gantry-01",
-    )
-    await publisher.close()
-"""
-
 import json
 import logging
+import re
 from datetime import datetime, timezone
 
 import aio_pika
@@ -33,10 +10,7 @@ logger = logging.getLogger(__name__)
 EXCHANGE_NAME = "gantry.events"
 ROUTING_KEY_PLATE = "vehicle.plate.detected"
 
-
 class EventPublisher:
-    """Publishes plate detection events to RabbitMQ over a topic exchange."""
-
     def __init__(self, amqp_url: str, exchange_name: str = EXCHANGE_NAME):
         self._amqp_url = amqp_url
         self._exchange_name = exchange_name
@@ -44,16 +18,7 @@ class EventPublisher:
         self._channel: aio_pika.abc.AbstractChannel | None = None
         self._exchange: aio_pika.abc.AbstractExchange | None = None
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
     async def connect(self) -> None:
-        """Open a robust connection and declare the topic exchange.
-
-        Raises on failure — the caller decides whether to abort or fall
-        back to log-only mode.
-        """
         logger.info("Connecting to RabbitMQ at %s …", self._amqp_url)
         self._connection = await aio_pika.connect_robust(self._amqp_url)
         self._channel = await self._connection.channel()
@@ -69,7 +34,6 @@ class EventPublisher:
         )
 
     async def close(self) -> None:
-        """Gracefully shut down the connection."""
         if self._connection and not self._connection.is_closed:
             await self._connection.close()
             logger.info("RabbitMQ connection closed.")
@@ -82,23 +46,25 @@ class EventPublisher:
             and self._exchange is not None
         )
 
-    # ------------------------------------------------------------------
-    # Publish
-    # ------------------------------------------------------------------
-
     async def publish_plate_detected(
         self,
         plate_text: str,
         confidence: float,
         bbox: list[int],
         gantry_id: str,
+        checksum_valid: bool = False, # Added Checksum Flag
         frame_timestamp: str | None = None,
     ) -> bool:
-        """Publish a ``vehicle.plate.detected`` event.
-
-        Returns True on success, False if the publisher is disconnected
-        or the publish fails.
-        """
+        
+        # --- NEW VALIDATION STEP ---
+        # 1. Must pass checksum. If it doesn't, we drop it to prevent downstream errors.
+        if not checksum_valid:
+             logger.warning(
+                 "Dropping plate '%s' - Failed SG Checksum validation.", 
+                 plate_text
+             )
+             return False
+             
         if not self.is_connected:
             logger.warning("Publisher not connected — dropping event for '%s'", plate_text)
             return False

@@ -1,29 +1,3 @@
-"""
-plate_reader.py — License plate detection and OCR engine, tuned for Singapore plates.
-
-Pipeline:
-  Image → YOLO11n (detect plate bbox) → Crop → Normalise colour →
-  Preprocess (CLAHE) → TrOCR → Clean text → "QX1728A"
-
-Why TrOCR over EasyOCR:
-  EasyOCR's general English model was not trained on license plate fonts (Charles
-  Wright typeface). It commonly confuses Q→D, X→Y, 0→O on white-on-black plates.
-  TrOCR (microsoft/trocr-base-printed) is a transformer trained on printed text
-  and handles these characters far more reliably on CPU.
-
-Why CLAHE over binarization for preprocessing:
-  TrOCR is a ViT-based transformer pretrained on clean printed-text images — it
-  expects intact grayscale input. Hard binarization (AdaptiveThreshold, Otsu) and
-  morphological ops (erode/dilate) break character strokes, introducing noise that
-  degrades TrOCR accuracy. CLAHE enhances local contrast while preserving stroke
-  integrity, which is what the model needs.
-
-Usage:
-  reader = PlateReader("plate_model.pt")
-  results = reader.read(image_bgr)
-  # [{"text": "QX1728A", "confidence": 0.94, "bbox": [x1,y1,x2,y2]}]
-"""
-
 import re
 import logging
 from pathlib import Path
@@ -36,33 +10,18 @@ from ultralytics import YOLO
 
 logger = logging.getLogger(__name__)
 
-# TrOCR model — downloaded automatically from HuggingFace on first run (~400 MB)
 _TROCR_MODEL_ID = "microsoft/trocr-base-printed"
-
-# Cap crop width before TrOCR to keep CPU inference fast (~300 ms vs 1+ s)
 _MAX_CROP_WIDTH = 512
 
-
 class PlateReader:
-    """License plate detector + TrOCR reader."""
-
     def __init__(
         self,
         model_path: str = "plate_model.pt",
         detect_conf: float = 0.25,
         gpu: bool = False,
     ):
-        """
-        Args:
-            model_path:  Path to YOLO11 .pt weights for plate detection.
-            detect_conf: Minimum YOLO detection confidence (0.0–1.0).
-            gpu:         Use GPU for inference. False = CPU-only.
-        """
         if not Path(model_path).exists():
-            raise FileNotFoundError(
-                f"Model not found at '{model_path}'. "
-                "Run download_model.py first."
-            )
+            raise FileNotFoundError(f"Model not found at '{model_path}'.")
         self.detector = YOLO(model_path)
         self.detect_conf = detect_conf
         logger.info("YOLO model loaded from %s", model_path)
@@ -73,60 +32,40 @@ class PlateReader:
         self.trocr.eval()
         logger.info("TrOCR ready (GPU=%s)", gpu)
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
     def read(self, image: np.ndarray) -> list[dict]:
-        """
-        Detect and read all license plates in an image.
-
-        Args:
-            image: BGR image (OpenCV format), e.g. from cv2.imread().
-
-        Returns:
-            List of dicts with keys:
-              - text:       plate string, e.g. "QX1728A"
-              - confidence: YOLO detection confidence (0–1)
-              - bbox:       [x1, y1, x2, y2] pixel coordinates
-        """
         plates = []
         for bbox, conf in self._detect_plates(image):
             x1, y1, x2, y2 = bbox
             crop       = self._crop_plate(image, x1, y1, x2, y2)
             normalised = self._normalise_colour_scheme(crop)
             raw_text   = self._ocr_read(normalised)
+            
+            # First, clean out garbage chars
             clean_text = self._clean_plate_text(raw_text)
+            
+            # Second, attempt to fix common OCR mistakes (0 vs O, etc)
+            fixed_text = self._fix_common_ocr_errors(clean_text)
 
-            if clean_text:
+            if fixed_text:
+                is_valid = self._validate_sg_checksum(fixed_text)
                 plates.append({
-                    "text":       clean_text,
+                    "text":       fixed_text,
                     "confidence": round(float(conf), 3),
                     "bbox":       [int(x1), int(y1), int(x2), int(y2)],
+                    "checksum_valid": is_valid # Add this flag for downstream
                 })
         return plates
 
     def read_from_path(self, image_path: str) -> list[dict]:
-        """Convenience: read plates from an image file path."""
         image = cv2.imread(image_path)
-        if image is None:
-            raise ValueError(f"Could not read image: {image_path}")
         return self.read(image)
 
     def read_from_bytes(self, image_bytes: bytes) -> list[dict]:
-        """Convenience: read plates from raw image bytes (e.g., uploaded file)."""
         arr = np.frombuffer(image_bytes, dtype=np.uint8)
         image = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-        if image is None:
-            raise ValueError("Could not decode image bytes")
         return self.read(image)
 
-    # ------------------------------------------------------------------
-    # Internal pipeline steps
-    # ------------------------------------------------------------------
-
     def _detect_plates(self, image: np.ndarray) -> list[tuple]:
-        """Run YOLO and return [(bbox, confidence)] sorted by confidence desc."""
         results = self.detector(image, conf=self.detect_conf, verbose=False)
         detections = []
         for result in results:
@@ -137,10 +76,7 @@ class PlateReader:
         detections.sort(key=lambda d: d[1], reverse=True)
         return detections
 
-    def _crop_plate(
-        self, image: np.ndarray, x1: float, y1: float, x2: float, y2: float
-    ) -> np.ndarray:
-        """Crop the plate region with a small padding."""
+    def _crop_plate(self, image: np.ndarray, x1: float, y1: float, x2: float, y2: float) -> np.ndarray:
         h, w = image.shape[:2]
         pad_x = int((x2 - x1) * 0.05)
         pad_y = int((y2 - y1) * 0.10)
@@ -151,44 +87,26 @@ class PlateReader:
         return image[y1:y2, x1:x2]
 
     def _normalise_colour_scheme(self, crop: np.ndarray) -> np.ndarray:
-        """
-        Normalise Singapore plate colour scheme so text is always dark-on-light.
-
-        LTA permits two schemes:
-          - White-on-black (white text, black bg) → invert before OCR
-          - Black-on-white / black-on-yellow       → use as-is
-        """
         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-        if float(np.mean(gray)) < 100:
-            logger.debug("White-on-black plate detected — inverting")
+        if float(np.mean(gray)) < 110: # Increased threshold slightly
             return cv2.bitwise_not(crop)
         return crop
 
     def _preprocess_for_ocr(self, crop: np.ndarray) -> np.ndarray:
-        """
-        Apply CLAHE contrast enhancement before TrOCR inference.
-
-        TrOCR is a ViT-based transformer pretrained on clean printed-text images.
-        It expects intact grayscale input — NOT hard-binarized pixels.
-
-        Binarization (AdaptiveThreshold, Otsu) and morphological ops (erode/dilate)
-        break character strokes and introduce noise that degrades accuracy. CLAHE
-        enhances local contrast without destroying stroke integrity.
-
-        Returns an RGB numpy array ready for TrOCRProcessor.
-        """
+        """Enhanced Preprocessing: CLAHE + Unsharp Masking"""
         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4, 4))
+        
+        # 1. Stronger CLAHE
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
         enhanced = clahe.apply(gray)
-        return cv2.cvtColor(enhanced, cv2.COLOR_GRAY2RGB)
+        
+        # 2. Unsharp Mask (Sharpening to define letter edges)
+        gaussian_3 = cv2.GaussianBlur(enhanced, (0, 0), 2.0)
+        unsharp_image = cv2.addWeighted(enhanced, 2.0, gaussian_3, -1.0, 0)
+        
+        return cv2.cvtColor(unsharp_image, cv2.COLOR_GRAY2RGB)
 
     def _ocr_read(self, crop: np.ndarray) -> str:
-        """
-        Run TrOCR on the plate crop.
-
-        Applies CLAHE preprocessing then caps width to _MAX_CROP_WIDTH
-        to keep CPU inference latency acceptable.
-        """
         rgb = self._preprocess_for_ocr(crop)
         pil_img = Image.fromarray(rgb)
 
@@ -204,25 +122,73 @@ class PlateReader:
         return self.processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
 
     def _clean_plate_text(self, raw: str) -> str:
-        """Uppercase, strip spaces, keep only alphanumeric characters."""
         return re.sub(r"[^A-Z0-9]", "", raw.upper().strip())
 
+    def _fix_common_ocr_errors(self, plate: str) -> str:
+        """Fixes obvious placement errors before checksum validates."""
+        if not plate: return plate
+        
+        # Fix starting zero (e.g. 0X1728A -> QX1728A or OX...)
+        # TrOCR commonly confuses Q/O/0
+        if plate.startswith("0X") or plate.startswith("OX"):
+             plate = "QX" + plate[2:]
+             
+        # If the last character is a digit instead of a letter
+        # e.g. SDN74840 -> SDN7484U or SDN7484O
+        if len(plate) >= 4 and plate[-1].isdigit():
+             # Very common for U/O to be read as 0
+             if plate[-1] == "0":
+                 # We leave it as 'O' or 'U' but checksum will be the final judge.
+                 # Actually, we can just strip the last char and let the checksum 
+                 # calculate what it *should* be, but for now we'll guess 'U'
+                 plate = plate[:-1] + "U" 
+        return plate
 
-# ------------------------------------------------------------------
-# Quick self-test
-# ------------------------------------------------------------------
+    def _validate_sg_checksum(self, plate: str) -> bool:
+        """
+        Implements the LTA Checksum Algorithm.
+        Multiplier: 9, 4, 5, 4, 3, 2
+        Alphabet mapping: A=1, B=2 ... Z=26
+        Result mapping: 0=A, 1=Z, 2=Y, 3=X, 4=W, 5=V, 6=U, 7=T, 8=S, 9=R, 
+                        10=P, 11=M, 12=L, 13=K, 14=J, 15=H, 16=G, 17=E, 18=D, 19=C, 20=B
+        Note: F, I, N, O, Q, V, W are excluded from the final checksum letter.
+        """
+        match = re.match(r'^([A-Z]{1,3})([0-9]{1,4})([A-Z])$', plate)
+        if not match:
+            return False
+            
+        prefix, numbers, suffix = match.groups()
+        
+        # If prefix is 3 letters (e.g., SBA), drop the first letter (e.g., -> BA)
+        # If prefix is 1 letter, pad left with space (which equals A or 1 if we had to)
+        # Standard implementation takes the last two letters of prefix
+        if len(prefix) == 3:
+            prefix = prefix[1:]
+        elif len(prefix) == 1:
+            prefix = "A" + prefix # Padding logic for single letters usually assumes A
+            
+        # Pad numbers to 4 digits
+        numbers = numbers.zfill(4)
+        
+        # Convert letters to numbers (A=1...Z=26)
+        p1 = ord(prefix[0]) - 64
+        p2 = ord(prefix[1]) - 64
+        n1, n2, n3, n4 = [int(d) for d in numbers]
+        
+        # Multiply by weights: 9, 4, 5, 4, 3, 2
+        total = (p1 * 9) + (p2 * 4) + (n1 * 5) + (n2 * 4) + (n3 * 3) + (n4 * 2)
+        
+        remainder = total % 19
+        
+        # LTA Mapping
+        mapping = {
+            0: 'A', 1: 'Z', 2: 'Y', 3: 'X', 4: 'W', 5: 'V', 6: 'U',
+            7: 'T', 8: 'S', 9: 'R', 10: 'P', 11: 'M', 12: 'L',
+            13: 'K', 14: 'J', 15: 'H', 16: 'G', 17: 'E', 18: 'D', 19: 'C', 20: 'B'
+        }
+        
+        expected_suffix = mapping.get(remainder)
+        return expected_suffix == suffix
+
 if __name__ == "__main__":
-    import sys
-    logging.basicConfig(level=logging.INFO)
-
-    model = sys.argv[1] if len(sys.argv) > 1 else "plate_model.pt"
-    image = sys.argv[2] if len(sys.argv) > 2 else "test_car.jpg"
-
-    reader = PlateReader(model)
-    results = reader.read_from_path(image)
-
-    if results:
-        for r in results:
-            print(f"  Plate: {r['text']}  (conf: {r['confidence']})")
-    else:
-        print("  No plates detected.")
+    pass

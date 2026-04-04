@@ -7,17 +7,6 @@
 # Stop:    docker compose down
 
 services:
-  rabbitmq:
-    image: rabbitmq:3-management
-    ports:
-      - "5672:5672"   # AMQP Protocol
-      - "15672:15672" # Management UI
-    healthcheck:
-      test: rabbitmq-diagnostics -q ping
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   gantry-lpr:
     build: .
     env_file:
@@ -25,13 +14,13 @@ services:
     ports:
       - "8081:8000"
     volumes:
+      # Ensure your local model file exists in the same directory
       - ./plate_model.pt:/app/plate_model.pt:ro
     environment:
-      - AMQP_URL=amqp://guest:guest@rabbitmq:5672/
+      - AMQP_URL=amqps://wbchnboq:DGHYxMyq8-ZPk6ieghUs0sfe766XegQq@armadillo.rmq.cloudamqp.com:5671/wbchnboq
       - GANTRY_ID=gantry-01
       - DETECT_CONF=0.5
       - HF_TOKEN=${HF_TOKEN}
       - STREAM_URL=${STREAM_URL}
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
+      - PORT=${PORT}
+    restart: unless-stopped
