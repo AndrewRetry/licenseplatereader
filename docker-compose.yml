@@ -1,28 +1,40 @@
 services:
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    ports:
+      - "5672:5672"
+      - "15672:15672"       # management UI → guest/guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   ocr-service:
-    build: ./ocr_service
-    env_file:
-      - .env
+    build:
+      context: ./ocr_service
+      args:
+        HF_TOKEN: ${HF_TOKEN}   # only needed at build time
+    env_file: .env
     ports:
       - "8001:8001"
-    volumes:
-      - ./plate_model.pt:/app/plate_model.pt:ro
     environment:
       - MODEL_PATH=/app/plate_model.pt
-      - DETECT_CONF=0.5
-      - HF_TOKEN=${HF_TOKEN}
+      - DETECT_CONF=${DETECT_CONF}
+    # No volumes block — both models are baked into the image
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 10s
       timeout: 5s
       retries: 10
-      start_period: 60s   # TrOCR needs time to load on first start
+      start_period: 30s   # fast-plate-ocr loads in seconds, not minutes
 
   camera-service:
     build: ./camera_service
-    env_file:
-      - .env
+    env_file: .env
     ports:
       - "8002:8002"
     environment:
@@ -31,8 +43,7 @@ services:
 
   detect-plate-service:
     build: ./detect_plate_service
-    env_file:
-      - .env
+    env_file: .env
     ports:
       - "8081:8000"
     environment:
@@ -45,7 +56,9 @@ services:
       - COOLDOWN_S=${COOLDOWN_S}
     restart: unless-stopped
     depends_on:
+      rabbitmq:
+        condition: service_healthy
       ocr-service:
-        condition: service_healthy   # ← waits for model to actually be ready
+        condition: service_healthy
       camera-service:
         condition: service_started
