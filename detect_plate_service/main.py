@@ -107,7 +107,7 @@ async def stream_start(body: StreamStartRequest | None = None):
 
     # Push new URL to camera service if explicitly provided
     if body and body.stream_url:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=5.0)) as client:
             try:
                 await client.post(f"{CAMERA_SERVICE_URL}/config", params={"stream_url": url})
             except Exception as e:

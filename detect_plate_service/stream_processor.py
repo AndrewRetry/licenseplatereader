@@ -96,12 +96,12 @@ class OrchestratorStreamProcessor:
     # ------------------------------------------------------------------
 
     async def _run_loop(self) -> None:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             while self._running:
-                start = time.monotonic()
+                next_tick = asyncio.get_event_loop().time() + self._interval
                 await self._process_one_frame(client)
-                elapsed = time.monotonic() - start
-                await asyncio.sleep(max(0.0, self._interval - elapsed))
+                sleep_for = max(0.0, next_tick - asyncio.get_event_loop().time())
+                await asyncio.sleep(sleep_for)
 
     async def _process_one_frame(self, client: httpx.AsyncClient) -> None:
         # 1. Fetch frame
