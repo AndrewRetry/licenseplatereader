@@ -150,7 +150,7 @@ class OrchestratorStreamProcessor:
             is_valid = plate.get("checksum_valid", False)
 
             if self._is_duplicate(text):
-                logger.debug("Dedup skip: %s", text)
+                logger.info("Dedup skip (cooldown active): %s", text)   # ← was DEBUG
                 continue
 
             self._recent_plates[text] = time.monotonic()
@@ -176,6 +176,11 @@ class OrchestratorStreamProcessor:
                     gantry_id=self._gantry_id,
                     checksum_valid=is_valid,
                     frame_timestamp=timestamp,
+                )
+            else:
+                logger.warning(          # ← was silent
+                    "No publisher — plate detected but NOT published: %s (conf=%.2f)",
+                    text, plate["confidence"],
                 )
 
     def _is_duplicate(self, plate_text: str) -> bool:

@@ -48,7 +48,10 @@ async def lifespan(app: FastAPI):
         _state["publisher"] = publisher
         logger.info("RabbitMQ connected.")
     except Exception as e:
-        logger.warning("RabbitMQ unavailable — log-only mode. %s", e)
+        logger.error(            # ← was warning, easy to miss
+            "RabbitMQ unavailable — running in LOG-ONLY mode. "
+            "No plate events will be published. Error: %s", e
+        )
         _state["publisher"] = None
 
     # 2. Auto-start stream if STREAM_URL is configured

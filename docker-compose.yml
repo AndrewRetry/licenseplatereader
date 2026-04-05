@@ -12,6 +12,12 @@ services:
       - DETECT_CONF=0.5
       - HF_TOKEN=${HF_TOKEN}
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s   # TrOCR needs time to load on first start
 
   camera-service:
     build: ./camera_service
@@ -39,5 +45,7 @@ services:
       - COOLDOWN_S=${COOLDOWN_S}
     restart: unless-stopped
     depends_on:
-      - ocr-service
-      - camera-service
+      ocr-service:
+        condition: service_healthy   # ← waits for model to actually be ready
+      camera-service:
+        condition: service_started
