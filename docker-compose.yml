@@ -1,26 +1,43 @@
-# docker-compose.yml — Local dev stack for the Gantry LPR microservice
-#
-# Start:   docker compose up -d
-# Logs:    docker compose logs -f gantry-lpr
-# RabbitMQ UI:  http://localhost:15673  (guest / guest)
-# Plate API:    http://localhost:8081/docs
-# Stop:    docker compose down
-
 services:
-  gantry-lpr:
-    build: .
+  ocr-service:
+    build: ./ocr_service
+    env_file:
+      - .env
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./plate_model.pt:/app/plate_model.pt:ro
+    environment:
+      - MODEL_PATH=/app/plate_model.pt
+      - DETECT_CONF=0.5
+      - HF_TOKEN=${HF_TOKEN}
+    restart: unless-stopped
+
+  camera-service:
+    build: ./camera_service
+    env_file:
+      - .env
+    ports:
+      - "8002:8002"
+    environment:
+      - STREAM_URL=${STREAM_URL}
+    restart: unless-stopped
+
+  detect-plate-service:
+    build: ./detect_plate_service
     env_file:
       - .env
     ports:
       - "8081:8000"
-    volumes:
-      # Ensure your local model file exists in the same directory
-      - ./plate_model.pt:/app/plate_model.pt:ro
     environment:
-      - AMQP_URL=amqps://wbchnboq:DGHYxMyq8-ZPk6ieghUs0sfe766XegQq@armadillo.rmq.cloudamqp.com:5671/wbchnboq
-      - GANTRY_ID=gantry-01
-      - DETECT_CONF=0.5
-      - HF_TOKEN=${HF_TOKEN}
-      - STREAM_URL=${STREAM_URL}
       - PORT=${PORT}
+      - AMQP_URL=${AMQP_URL}
+      - GANTRY_ID=${GANTRY_ID}
+      - CAMERA_SERVICE_URL=http://camera-service:8002
+      - OCR_SERVICE_URL=http://ocr-service:8001
+      - PROCESS_INTERVAL=${PROCESS_INTERVAL}
+      - COOLDOWN_S=${COOLDOWN_S}
     restart: unless-stopped
+    depends_on:
+      - ocr-service
+      - camera-service

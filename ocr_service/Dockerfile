@@ -1,12 +1,3 @@
-# Dockerfile — Gantry License Plate Reader Microservice
-#
-# Build:  docker build -t gantry-lpr .
-# Run:    docker run -p 8000:8000 \
-#           -v ./plate_model.pt:/app/plate_model.pt \
-#           -e AMQP_URL=amqp://guest:guest@rabbitmq:5672/ \
-#           -e STREAM_URL=http://host.docker.internal:8080/video \
-#           gantry-lpr
-
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -26,10 +17,8 @@ TrOCRProcessor.from_pretrained('microsoft/trocr-base-printed'); \
 VisionEncoderDecoderModel.from_pretrained('microsoft/trocr-base-printed'); \
 print('TrOCR cached.')"
 
-COPY plate_reader.py server.py \
-     event_publisher.py stream_processor.py \
-     ./
+COPY main.py plate_reader.py ./
 
-EXPOSE 8000
+EXPOSE 8001
 
-CMD ["python", "server.py"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]
