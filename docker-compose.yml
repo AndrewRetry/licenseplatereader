@@ -11,6 +11,8 @@ services:
       timeout: 5s
       retries: 10
     restart: unless-stopped
+    networks:
+      - drivethrough-net
 
   ocr-service:
     build:
@@ -32,6 +34,8 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
+    networks:
+      - drivethrough-net
 
   camera-service:
     build: ./camera_service
@@ -41,6 +45,8 @@ services:
     environment:
       - STREAM_URL=${STREAM_URL}
     restart: unless-stopped
+    networks:
+      - drivethrough-net
 
   detect-plate-service:
     build: ./detect_plate_service
@@ -63,6 +69,8 @@ services:
         condition: service_healthy
       camera-service:
         condition: service_started
+    networks:
+      - drivethrough-net
 
   gantry-interface:
     build: ./gantry-interface

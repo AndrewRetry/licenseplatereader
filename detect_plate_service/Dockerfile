@@ -5,7 +5,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY main.py dashboard.py event_publisher.py stream_processor.py ./
+COPY main.py event_publisher.py stream_processor.py ./
 
 EXPOSE 8000
 

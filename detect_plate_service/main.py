@@ -10,7 +10,6 @@ import httpx
 
 from event_publisher import EventPublisher
 from stream_processor import OrchestratorStreamProcessor
-from dashboard import DASHBOARD_HTML
 
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8000"))
@@ -160,12 +159,6 @@ async def proxy_video():
         media_type="multipart/x-mixed-replace; boundary=frame",
         background=r.aclose,
     )
-
-
-@app.get("/dashboard", response_class=HTMLResponse)
-async def dashboard():
-    return DASHBOARD_HTML
-
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host=HOST, port=PORT, reload=False, log_level="info")
