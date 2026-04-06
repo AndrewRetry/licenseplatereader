@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Gantry Interface</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow:wght@400;600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg:         #0a0b0d;
+      --surface:    #111318;
+      --border:     #1e2229;
+      --amber:      #f59e0b;
+      --amber-dim:  #78500a;
+      --green:      #22c55e;
+      --red:        #ef4444;
+      --muted:      #4b5563;
+      --text:       #e2e8f0;
+      --text-dim:   #6b7280;
+      --mono:       'Share Tech Mono', monospace;
+      --sans:       'Barlow', sans-serif;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 24px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+
+    .wordmark {
+      font-family: var(--mono);
+      font-size: 13px;
+      letter-spacing: 0.15em;
+      color: var(--amber);
+      text-transform: uppercase;
+    }
+
+    .wordmark span { color: var(--text-dim); }
+
+    .status-bar { display: flex; gap: 20px; align-items: center; }
+
+    .pill {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      color: var(--text-dim);
+      text-transform: uppercase;
+    }
+
+    .dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--muted);
+      transition: background 0.4s;
+    }
+    .dot.ok  { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .dot.err { background: var(--red);   box-shadow: 0 0 6px var(--red); }
+
+    /* ── Main grid ── */
+    main {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 360px;
+      grid-template-rows: auto 1fr;
+      gap: 1px;
+      background: var(--border);
+    }
+
+    .panel {
+      background: var(--bg);
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .panel-label {
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 0.2em;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    /* ── Camera ── */
+    .camera-panel { grid-column: 1; grid-row: 1 / 3; }
+
+    .camera-wrap {
+      flex: 1;
+      background: #000;
+      border: 1px solid var(--border);
+      position: relative;
+      min-height: 340px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    .camera-wrap img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+    }
+
+    .camera-off {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      color: var(--text-dim);
+      font-family: var(--mono);
+      font-size: 12px;
+      letter-spacing: 0.1em;
+    }
+
+    .camera-off .icon { font-size: 36px; opacity: 0.3; }
+
+    /* scanline effect when active */
+    .scanline {
+      position: absolute;
+      inset: 0;
+      background: repeating-linear-gradient(
+        to bottom,
+        transparent 0px,
+        transparent 3px,
+        rgba(0,0,0,0.08) 3px,
+        rgba(0,0,0,0.08) 4px
+      );
+      pointer-events: none;
+    }
+
+    /* ── Controls ── */
+    .controls-panel { grid-column: 2; grid-row: 1; }
+
+    .btn-row { display: flex; gap: 10px; }
+
+    .btn {
+      flex: 1;
+      padding: 10px 16px;
+      font-family: var(--mono);
+      font-size: 12px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      border: 1px solid;
+      cursor: pointer;
+      transition: all 0.15s;
+      background: transparent;
+    }
+
+    .btn-start {
+      color: var(--green);
+      border-color: var(--green);
+    }
+    .btn-start:hover { background: var(--green); color: #000; }
+    .btn-start:disabled { opacity: 0.3; cursor: not-allowed; }
+
+    .btn-stop {
+      color: var(--red);
+      border-color: var(--red);
+    }
+    .btn-stop:hover { background: var(--red); color: #fff; }
+    .btn-stop:disabled { opacity: 0.3; cursor: not-allowed; }
+
+    .stream-url-input {
+      width: 100%;
+      padding: 9px 12px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 12px;
+      outline: none;
+    }
+    .stream-url-input:focus { border-color: var(--amber); }
+    .stream-url-input::placeholder { color: var(--text-dim); }
+
+    .input-label {
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 0.15em;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      margin-bottom: 6px;
+    }
+
+    .toast {
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      padding: 8px 12px;
+      border-left: 3px solid var(--amber);
+      background: rgba(245,158,11,0.07);
+      color: var(--amber);
+      display: none;
+    }
+    .toast.visible { display: block; }
+    .toast.error { border-color: var(--red); background: rgba(239,68,68,0.07); color: var(--red); }
+
+    /* ── Detections ── */
+    .detections-panel { grid-column: 2; grid-row: 2; overflow: hidden; }
+
+    .detection-scroll {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .detection-scroll::-webkit-scrollbar { width: 4px; }
+    .detection-scroll::-webkit-scrollbar-track { background: transparent; }
+    .detection-scroll::-webkit-scrollbar-thumb { background: var(--border); }
+
+    .detection-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--amber);
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      animation: slideIn 0.25s ease;
+    }
+
+    .detection-card.fresh { border-left-color: var(--green); }
+
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateX(8px); }
+      to   { opacity: 1; transform: translateX(0); }
+    }
+
+    .plate-text {
+      font-family: var(--mono);
+      font-size: 18px;
+      letter-spacing: 0.2em;
+      color: var(--amber);
+    }
+
+    .plate-meta {
+      display: flex;
+      justify-content: space-between;
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--text-dim);
+      letter-spacing: 0.07em;
+    }
+
+    .conf-high { color: var(--green); }
+    .conf-mid  { color: var(--amber); }
+    .conf-low  { color: var(--red); }
+
+    .empty-state {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      color: var(--text-dim);
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      text-align: center;
+    }
+
+    .count-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--amber-dim);
+      color: var(--amber);
+      font-family: var(--mono);
+      font-size: 10px;
+      width: 20px; height: 20px;
+      border-radius: 2px;
+      margin-left: 8px;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="wordmark">GANTRY <span>//</span> LPR INTERFACE</div>
+  <div class="status-bar">
+    <div class="pill"><div class="dot" id="dot-amqp"></div><span id="lbl-amqp">AMQP</span></div>
+    <div class="pill"><div class="dot" id="dot-stream"></div><span id="lbl-stream">STREAM</span></div>
+  </div>
+</header>
+
+<main>
+
+  <!-- Camera feed -->
+  <div class="panel camera-panel">
+    <div class="panel-label">Camera Feed</div>
+    <div class="camera-wrap" id="camera-wrap">
+      <div class="camera-off" id="camera-off">
+        <div class="icon">⬛</div>
+        <div>NO STREAM ACTIVE</div>
+      </div>
+      <div class="scanline"></div>
+    </div>
+  </div>
+
+  <!-- Controls -->
+  <div class="panel controls-panel">
+    <div class="panel-label">Stream Control</div>
+
+    <div>
+      <div class="input-label">Stream URL</div>
+      <input
+        type="text"
+        class="stream-url-input"
+        id="stream-url"
+        placeholder="http://192.168.x.x:8080/video"
+      />
+    </div>
+
+    <div class="btn-row">
+      <button class="btn btn-start" id="btn-start" onclick="startStream()">▶ Start</button>
+      <button class="btn btn-stop"  id="btn-stop"  onclick="stopStream()">■ Stop</button>
+    </div>
+
+    <div class="toast" id="toast"></div>
+  </div>
+
+  <!-- Detections -->
+  <div class="panel detections-panel">
+    <div class="panel-label">
+      Plate Detections
+      <span class="count-badge" id="det-count">0</span>
+    </div>
+    <div class="detection-scroll" id="det-list">
+      <div class="empty-state" id="empty-state">
+        <div>◉</div>
+        <div>AWAITING VEHICLES</div>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<script>
+(function () {
+  const POLL_HEALTH_MS = 3000;
+  let streamActive = false;
+  let detCount = 0;
+  let freshTimers = {};
+
+  // ── WebSocket ──────────────────────────────────────────────────────────────
+  let ws;
+
+  function connectWS() {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+    ws.onmessage = (evt) => {
+      const msg = JSON.parse(evt.data);
+      if (msg.type === "status")    handleStatus(msg);
+      if (msg.type === "detection") handleDetection(msg);
+    };
+
+    ws.onclose = () => setTimeout(connectWS, 3000);
+    ws.onerror = () => ws.close();
+  }
+
+  function handleStatus({ amqp }) {
+    const dot = document.getElementById("dot-amqp");
+    const lbl = document.getElementById("lbl-amqp");
+    dot.className = "dot " + (amqp === "connected" ? "ok" : "err");
+    lbl.textContent = amqp === "connected" ? "AMQP" : "AMQP OFFLINE";
+  }
+
+  function handleDetection({ plate, confidence, timestamp }) {
+    const empty = document.getElementById("empty-state");
+    if (empty) empty.remove();
+
+    detCount++;
+    document.getElementById("det-count").textContent = detCount;
+
+    const list = document.getElementById("det-list");
+    const card = document.createElement("div");
+    card.className = "detection-card fresh";
+    card.id = "card-" + detCount;
+
+    const confClass = confidence == null ? "" :
+      confidence >= 0.75 ? "conf-high" :
+      confidence >= 0.5  ? "conf-mid"  : "conf-low";
+
+    const confText = confidence != null ? (confidence * 100).toFixed(0) + "%" : "—";
+    const time = timestamp ? new Date(timestamp).toLocaleTimeString() : "—";
+
+    card.innerHTML = `
+      <div class="plate-text">${plate}</div>
+      <div class="plate-meta">
+        <span class="${confClass}">CONF ${confText}</span>
+        <span>${time}</span>
+      </div>
+    `;
+
+    list.prepend(card);
+
+    // Remove "fresh" highlight after 3s
+    clearTimeout(freshTimers[detCount]);
+    freshTimers[detCount] = setTimeout(() => {
+      card.classList.remove("fresh");
+    }, 3000);
+  }
+
+  // ── Stream health polling ──────────────────────────────────────────────────
+  async function pollHealth() {
+    try {
+      const r = await fetch("/health");
+      const d = await r.json();
+
+      const active = d?.stream?.active ?? false;
+      setStreamStatus(active);
+    } catch {
+      setStreamStatus(false);
+    }
+  }
+
+  function setStreamStatus(active) {
+    streamActive = active;
+
+    document.getElementById("dot-stream").className = "dot " + (active ? "ok" : "");
+    document.getElementById("lbl-stream").textContent = active ? "STREAMING" : "STREAM OFF";
+    document.getElementById("btn-start").disabled = active;
+    document.getElementById("btn-stop").disabled  = !active;
+
+    const wrap = document.getElementById("camera-wrap");
+    const off  = document.getElementById("camera-off");
+    const existing = wrap.querySelector("img");
+
+    if (active && !existing) {
+      const img = document.createElement("img");
+      img.src = "/video";
+      img.alt = "Live camera feed";
+      img.onerror = () => {
+        img.remove();
+        if (off) off.style.display = "flex";
+      };
+      if (off) off.style.display = "none";
+      wrap.prepend(img);
+    } else if (!active && existing) {
+      existing.remove();
+      if (off) off.style.display = "flex";
+    }
+  }
+
+  // ── Stream controls ────────────────────────────────────────────────────────
+  window.startStream = async function () {
+    const url = document.getElementById("stream-url").value.trim();
+    const body = url ? { stream_url: url } : {};
+    try {
+      const r = await fetch("/stream/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      showToast("Stream started", false);
+      await pollHealth();
+    } catch (err) {
+      showToast("Start failed: " + err.message, true);
+    }
+  };
+
+  window.stopStream = async function () {
+    try {
+      const r = await fetch("/stream/stop", { method: "POST" });
+      if (!r.ok) throw new Error(await r.text());
+      showToast("Stream stopped", false);
+      await pollHealth();
+    } catch (err) {
+      showToast("Stop failed: " + err.message, true);
+    }
+  };
+
+  function showToast(msg, isError) {
+    const t = document.getElementById("toast");
+    t.textContent = msg;
+    t.className = "toast visible" + (isError ? " error" : "");
+    setTimeout(() => t.className = "toast", 3500);
+  }
+
+  // ── Boot ───────────────────────────────────────────────────────────────────
+  connectWS();
+  pollHealth();
+  setInterval(pollHealth, POLL_HEALTH_MS);
+})();
+</script>
+</body>
+</html>
