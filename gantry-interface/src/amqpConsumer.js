@@ -52,12 +52,20 @@ async function startConsumer({ amqpUrl, queueName, arrivalUrl, onDetection, onSt
         }
 
         // 1. Call arrival API
-        try {
-          await axios.post(arrivalUrl, { license_plate: plateText });
-          console.log(`[amqp] Arrival notified for plate=${plateText}`);
-        } catch (err) {
-          console.error(`[amqp] POST /arrival failed for plate=${plateText}: ${err.message}`);
-          // Nack without requeue — arrival failures should not block the queue
+        const response = await axios.post(arrivalUrl, { license_plate: plateText }, {
+          timeout: 15_000,
+          validateStatus: () => true,   // never throw on HTTP status — we handle it ourselves
+        });
+
+        if (response.status === 200) {
+          console.log(`[amqp] ✅ Arrival recorded  plate=${plateText}`);
+        } else {
+          // Structured log: status + full body so you can see exactly what went wrong
+          console.error(
+            `[amqp] ❌ POST /arrival failed  plate=${plateText}  HTTP=${response.status}  body=${JSON.stringify(response.data)}`
+          );
+          // 404 = no order exists — requeueing will just 404 again, discard it
+          // 5xx = transient upstream error — also discard for now (add DLX for retry if needed)
           return channel.nack(msg, false, false);
         }
 

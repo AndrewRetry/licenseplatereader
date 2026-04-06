@@ -63,7 +63,7 @@ services:
         condition: service_healthy
       camera-service:
         condition: service_started
-        
+
   gantry-interface:
     build: ./gantry-interface
     ports:
@@ -72,6 +72,13 @@ services:
       - ./gantry-interface/.env
     environment:
       - DETECT_SERVICE_URL=http://detect-plate-service:8000
+      - ARRIVAL_URL=http://arrival:5000/arrival
+    networks:
+      - drivethrough-net
     restart: unless-stopped
     depends_on:
       - detect-plate-service
+
+networks:
+  drivethrough-net:
+    external: true
