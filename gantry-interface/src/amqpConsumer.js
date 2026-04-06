@@ -53,7 +53,7 @@ async function startConsumer({ amqpUrl, queueName, arrivalUrl, onDetection, onSt
 
         // 1. Call arrival API
         try {
-          await axios.post(arrivalUrl, { plate: plateText });
+          await axios.post(arrivalUrl, { license_plate: plateText });
           console.log(`[amqp] Arrival notified for plate=${plateText}`);
         } catch (err) {
           console.error(`[amqp] POST /arrival failed for plate=${plateText}: ${err.message}`);
