@@ -131,10 +131,11 @@ class PlateReader:
         results = self.ocr.run(crop)
         if not results:
             return ""
-        return results[0].plate
+        pred = results[0]
+        return pred.plate if pred.plate else ""
 
     # ------------------------------------------------------------------
-    # Text cleaning and recovery — unchanged
+    # Text cleaning and recovery
     # ------------------------------------------------------------------
 
     def _clean_plate_text(self, raw: str) -> str:

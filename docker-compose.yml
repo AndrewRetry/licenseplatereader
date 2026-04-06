@@ -23,14 +23,15 @@ services:
     environment:
       - MODEL_PATH=/app/plate_model.pt
       - DETECT_CONF=${DETECT_CONF}
-    # No volumes block — both models are baked into the image
+    volumes:
+      - ./plate_model.pt:/app/plate_model.pt:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 10s
       timeout: 5s
       retries: 10
-      start_period: 30s   # fast-plate-ocr loads in seconds, not minutes
+      start_period: 30s
 
   camera-service:
     build: ./camera_service
@@ -62,3 +63,15 @@ services:
         condition: service_healthy
       camera-service:
         condition: service_started
+        
+  gantry-interface:
+    build: ./gantry-interface
+    ports:
+      - "3500:3500"
+    env_file:
+      - ./gantry-interface/.env
+    environment:
+      - DETECT_SERVICE_URL=http://detect-plate-service:8000
+    restart: unless-stopped
+    depends_on:
+      - detect-plate-service
