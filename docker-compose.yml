@@ -63,8 +63,6 @@ services:
       - COOLDOWN_S=${COOLDOWN_S}
     restart: unless-stopped
     depends_on:
-      rabbitmq:
-        condition: service_healthy
       ocr-service:
         condition: service_healthy
       camera-service:
@@ -80,7 +78,6 @@ services:
       - ./gantry-interface/.env
     environment:
       - DETECT_SERVICE_URL=http://detect-plate-service:8000
-      - ARRIVAL_URL=http://arrival:5000/arrival
     networks:
       - drivethrough-net
     restart: unless-stopped

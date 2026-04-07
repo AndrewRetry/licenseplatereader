@@ -36,9 +36,7 @@ class PlateReader:
         self.ocr = LicensePlateRecognizer(_OCR_MODEL)
         logger.info("fast-plate-ocr ready.")
 
-    # ------------------------------------------------------------------
     # Public interface
-    # ------------------------------------------------------------------
 
     def read(self, image: np.ndarray) -> list[dict]:
         plates = []
@@ -79,9 +77,7 @@ class PlateReader:
             raise ValueError(f"Could not read image at {image_path}")
         return self.read(image)
 
-    # ------------------------------------------------------------------
     # Detection
-    # ------------------------------------------------------------------
 
     def _detect_plates(self, image: np.ndarray) -> list[tuple]:
         results = self.detector(image, conf=self.detect_conf, verbose=False)
@@ -94,9 +90,7 @@ class PlateReader:
         detections.sort(key=lambda d: d[1], reverse=True)
         return detections
 
-    # ------------------------------------------------------------------
     # Image processing
-    # ------------------------------------------------------------------
 
     def _crop_plate(
         self,
@@ -134,9 +128,7 @@ class PlateReader:
         pred = results[0]
         return pred.plate if pred.plate else ""
 
-    # ------------------------------------------------------------------
     # Text cleaning and recovery
-    # ------------------------------------------------------------------
 
     def _clean_plate_text(self, raw: str) -> str:
         return re.sub(r"[^A-Z0-9]", "", raw.upper().strip())
@@ -171,9 +163,7 @@ class PlateReader:
 
         return prefix + digits + suffix
 
-    # ------------------------------------------------------------------
-    # SG checksum — unchanged
-    # ------------------------------------------------------------------
+    # SG checksum
 
     def _validate_sg_checksum(self, plate: str) -> bool:
         match = re.match(r'^([A-Z]{1,3})([0-9]{1,4})([A-Z])$', plate)

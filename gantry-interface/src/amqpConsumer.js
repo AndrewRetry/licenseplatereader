@@ -52,10 +52,17 @@ async function startConsumer({ amqpUrl, queueName, arrivalUrl, onDetection, onSt
         }
 
         // 1. Call arrival API
-        const response = await axios.post(arrivalUrl, { license_plate: plateText }, {
-          timeout: 15_000,
-          validateStatus: () => true,   // never throw on HTTP status — we handle it ourselves
-        });
+        const response = await axios.post(
+          arrivalUrl, 
+          { license_plate: plateText }, 
+          {
+            headers: {
+              'apikey': process.env.ARRIVAL_API_KEY,  // ← Changed
+            },
+            timeout: 15_000,
+            validateStatus: () => true,
+          }
+        );
 
         if (response.status === 200) {
           console.log(`[amqp] ✅ Arrival recorded  plate=${plateText}`);
